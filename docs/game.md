@@ -1,47 +1,47 @@
-# Игра: что известно из exe
+# The game: what the exe reveals
 
-Дата анализа: 24.11.2026. Объект: `D:\Games\Steam\steamapps\common\Dead Space 3\deadspace3.exe` (Steam-версия, запуск через EA App, AppID 1238060).
+Analyzed on 2026-11-24. Subject: `D:\Games\Steam\steamapps\common\Dead Space 3\deadspace3.exe` (Steam version, launched through the EA App, AppID 1238060).
 
-## Протокол: да, это Blaze
+## Protocol: yes, it is Blaze
 
-Строки из секции `.rdata` (она не зашифрована):
+Strings from the `.rdata` section (which is not encrypted):
 
-| Признак | Значение |
+| Indicator | Value |
 |---|---|
-| Версия SDK | `BlazeSDK 3.19.07.0`, сборка `Nov 27 2012` (путь `C:\ears\DL\006\packages\BlazeSDK\3.19.07.0\...`) |
-| Имя сервиса для редиректора | `deadspace-3-pc` |
-| Редиректор | `gosredirector.online.ea.com`, `gosredirector.ea.com` (`.scert`/`.stest` для тестовых окружений) |
-| Авторизация | `Blaze::Authentication::OriginLoginRequest` (`originLogin`), токен берётся у EA App через Origin SDK (LSX, `127.0.0.1`) |
-| Компоненты | `Authentication`, `Util` (`preAuth`, `postAuth`, `fetchClientConfig`, `userSettings*`, `getTelemetryServer`, `getTickerServer`), `UserSessions` (`updateNetworkInfo`, `lookupUser*`), `GameManager` (`createGame`, `joinGame`, `startMatchmaking`, `advanceGameState`, `updateMeshConnection`, `getGameListSnapshot`), `Locker`, `Playgroups`, статистика/лидерборды |
-| QoS | HTTP-пинги `http://%s:%u/qos/qos`, `/qos/firetype`, `/qos/firewall` |
+| SDK version | `BlazeSDK 3.19.07.0`, built `Nov 27 2012` (path `C:\ears\DL\006\packages\BlazeSDK\3.19.07.0\...`) |
+| Service name for the redirector | `deadspace-3-pc` |
+| Redirector | `gosredirector.online.ea.com`, `gosredirector.ea.com` (`.scert`/`.stest` for test environments) |
+| Authentication | `Blaze::Authentication::OriginLoginRequest` (`originLogin`); the token comes from the EA App through the Origin SDK (LSX, `127.0.0.1`) |
+| Components | `Authentication`, `Util` (`preAuth`, `postAuth`, `fetchClientConfig`, `userSettings*`, `getTelemetryServer`, `getTickerServer`), `UserSessions` (`updateNetworkInfo`, `lookupUser*`), `GameManager` (`createGame`, `joinGame`, `startMatchmaking`, `advanceGameState`, `updateMeshConnection`, `getGameListSnapshot`), `Locker`, `Playgroups`, stats/leaderboards |
+| QoS | HTTP pings `http://%s:%u/qos/qos`, `/qos/firetype`, `/qos/firewall` |
 
-Набор команд и их имена совпадают с Mass Effect 3 (BlazeSDK 3.15.x, тот же 2012 год). Это значит, что кодек TDF и формат пакетов из эмуляторов ME3 должны подойти без переделки.
+The command set and command names match Mass Effect 3 (BlazeSDK 3.15.x, also from 2012). This means the TDF codec and packet format from the ME3 emulators should fit without rework.
 
-Проверено 24.11.2026: `gosredirector.ea.com` резолвится в `159.153.51.18`, порт `42127` открыт. Порт в самом бинарнике не найден, потому что код зашифрован (см. ниже), но 42127 стандартен для Blaze 3.
+Checked on 2026-11-24: `gosredirector.ea.com` resolves to `159.153.51.18`, port `42127` is open. The port is not found in the binary itself because the code is encrypted (see below), but 42127 is the standard port for Blaze 3.
 
-## SSL: тот же доверенный CA, что в ME3
+## SSL: the same trusted CA as in ME3
 
-Встроенная таблица доверенных корней DirtySock ProtoSSL (смещение файла около `0xB31300`):
+The built-in table of trusted roots in DirtySock ProtoSSL (file offset around `0xB31300`):
 
 - `OTG3 Certificate Authority` (Electronic Arts, Online Technology Group)
 - `GOS 2011 Certificate Authority` (Global Online Studio)
 - `VeriSign Class 3 Secure Server CA`
 
-`OTG3` — тот самый корень, на который рассчитан сертификат-обход в `blaze-ssl-async` (Pocket Relay для ME3): «certificate built to bypass verification of older EA ProtoSSL implementations». DirtySock в DS3 того же поколения, поэтому велика вероятность, что обход сработает без патча клиента. Это первое, что нужно проверить экспериментом.
+`OTG3` is the very root that the bypass certificate in `blaze-ssl-async` (Pocket Relay for ME3) targets: "certificate built to bypass verification of older EA ProtoSSL implementations". DirtySock in DS3 is of the same generation, so the bypass is likely to work without a client patch. This is the first thing to verify by experiment.
 
-## Игровой трафик идёт P2P, Blaze только сводит игроков
+## Game traffic is P2P; Blaze only brings players together
 
-В бинарнике есть весь сетевой стек DirtySock: `netgamelink`, `commudp-global`, `prototunnel-tunnel` (`EA Tunnel`), UPnP (`AddPortMapping`, флаг `-noupnp`), `demangler.ea.com` (ProtoMangle, NAT-пробивка через сервер EA), `peerport=`, а также перечисления топологий `PEER_TO_PEER_FULL_MESH`, `PEER_TO_PEER_PARTIAL_MESH`, `PEER_TO_PEER_DIRTYCAST_FAILOVER` и типов NAT `NAT_TYPE_OPEN/MODERATE/STRICT`.
+The binary contains the whole DirtySock network stack: `netgamelink`, `commudp-global`, `prototunnel-tunnel` (`EA Tunnel`), UPnP (`AddPortMapping`, the `-noupnp` flag), `demangler.ea.com` (ProtoMangle, NAT traversal through an EA server), `peerport=`, as well as the topology enums `PEER_TO_PEER_FULL_MESH`, `PEER_TO_PEER_PARTIAL_MESH`, `PEER_TO_PEER_DIRTYCAST_FAILOVER` and the NAT types `NAT_TYPE_OPEN/MODERATE/STRICT`.
 
-Схема работы:
+How it works:
 
-1. Клиент подключается к Blaze (через редиректор), логинится токеном Origin.
-2. Хост создаёт игру (`createGame`), второй игрок находит её (матчмейкинг, список игр друзей или приглашение через EA App) и делает `joinGame`.
-3. Blaze рассылает обоим `NotifyGameSetup` с сетевыми адресами друг друга (внутренний и внешний IP:порт).
-4. Дальше игроки общаются напрямую по UDP через ProtoTunnel; при неудаче пытаются пробиться через demangler EA.
+1. The client connects to Blaze (through the redirector) and logs in with an Origin token.
+2. The host creates a game (`createGame`); the second player finds it (matchmaking, the friends' game list or an EA App invite) and sends `joinGame`.
+3. Blaze sends both of them `NotifyGameSetup` with each other's network addresses (internal and external IP:port).
+4. From then on the players talk directly over UDP through ProtoTunnel; if that fails, they try to get through with EA's demangler.
 
-Именно шаги 3–4 ломаются у большинства: адреса берутся из QoS EA, а NAT-пробивка зависит от demangler. Если Blaze-сервер свой и выдаёт адреса из виртуальной сети (Radmin VPN, ZeroTier, Tailscale), проблема NAT исчезает целиком: пробивать нечего.
+Steps 3 and 4 are exactly where it breaks for most players: the addresses come from EA's QoS, and NAT traversal depends on the demangler. If the Blaze server is our own and hands out addresses from a virtual network (Radmin VPN, ZeroTier, Tailscale), the NAT problem disappears entirely: there is nothing to traverse.
 
-## Исполняемый файл зашифрован
+## The executable is encrypted
 
-Секция `.text` имеет энтропию 8.0, точка входа указывает на безымянную седьмую секцию (заглушка DRM EA, `Core\Activation.dll`). Для Ghidra нужен дамп процесса после расшифровки (x64dbg + Scylla, или дамп памяти работающей игры). Статически доступны только `.rdata`, `.data`, `.rsrc`. Отсюда же следствие для патчей: менять байты кода в файле нельзя, только в памяти после старта, через прокси-DLL (игра импортирует `VERSION.dll`, `DINPUT8.dll`, `WSOCK32.dll`, `d3dx9_43.dll`; `binkw32.dll`, как в ME3, здесь нет).
+The `.text` section has an entropy of 8.0, and the entry point lies in an unnamed seventh section (the EA DRM stub, `Core\Activation.dll`). Ghidra needs a process dump taken after decryption (x64dbg + Scylla, or a memory dump of the running game). Statically, only `.rdata`, `.data` and `.rsrc` are available. This also constrains patches: code bytes cannot be changed in the file, only in memory after startup, through a proxy DLL (the game imports `VERSION.dll`, `DINPUT8.dll`, `WSOCK32.dll`, `d3dx9_43.dll`; there is no `binkw32.dll` as in ME3).

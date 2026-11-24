@@ -1,23 +1,23 @@
-# План работ и риски
+# Work plan and risks
 
-## Этапы
+## Stages
 
-| Этап | Результат | Как проверить |
+| Stage | Result | How to verify |
 |---|---|---|
-| 0. Захват трафика | Сделано (захваты №1 и №2 в [captures.md](captures.md)): порты, SSL, формат QoS и demangler, порт P2P 3659, причина обрывов (симметричный NAT/CGNAT). Содержимое Blaze-сообщений можно увидеть только на своём сервере | — |
-| 1. Редиректор + SSL | Сделано 24.11.2026 (см. «Свой редиректор» в [protocol.md](protocol.md)): рукопожатие с сертификатом-обходом проходит, игра переходит на основной сервер по открытому TCP и присылает `preAuth` | В логе эмулятора появляется `getServerInstance` с `deadspace-3-pc` |
-| 2. Логин | Сделано 24.11.2026 (см. «Логин» в [protocol.md](protocol.md)): `preAuth` → `originLogin` → `postAuth` проходят, игра входит в онлайн-меню кооператива и доходит до `createGame` | Пункт кооп-меню открывается без ошибки подключения |
-| 3. Игровая сессия | Хост: сделано 24.11.2026 (см. «Проверка на эмуляторе» в [protocol.md](protocol.md)), комната создаётся, игра идёт, выход с сохранением чистый. Гость: вход через «быструю игру» в публичную комнату работает в игре по VPN 25.11.2026 (см. «Второй игрок» в [protocol.md](protocol.md)). Приглашение через EA App в частную комнату тоже работает в игре (25.11.2026) | Оба в одной сессии, P2P UDP виден между 26.x адресами |
-| 4. Стабилизация | Обработка отключений, повторное подключение, корректный выход в меню | Несколько глав подряд без разрывов |
-| 5. Удобство | Однокнопочный запуск: эмулятор + правка `hosts` + правила брандмауэра | Второй игрок настраивается за минуту |
+| 0. Traffic capture | Done (captures #1 and #2 in [captures.md](captures.md)): ports, SSL, QoS and demangler formats, P2P port 3659, cause of the disconnects (symmetric NAT/CGNAT). The content of Blaze messages can only be seen on our own server | — |
+| 1. Redirector + SSL | Done on 2026-11-24 (see "Own redirector" in [protocol.md](protocol.md)): the handshake with the bypass certificate succeeds, the game moves to the main server over plain TCP and sends `preAuth` | `getServerInstance` with `deadspace-3-pc` appears in the emulator log |
+| 2. Login | Done on 2026-11-24 (see "Login" in [protocol.md](protocol.md)): `preAuth` → `originLogin` → `postAuth` go through, the game enters the online co-op menu and reaches `createGame` | The co-op menu item opens without a connection error |
+| 3. Game session | Host: done on 2026-11-24 (see "Check on the emulator" in [protocol.md](protocol.md)); the room is created, the game runs, quitting with a save is clean. Guest: joining a public room through quick match works in game over VPN on 2026-11-25 (see "Second player" in [protocol.md](protocol.md)). An EA App invite into a private room also works in game (2026-11-25) | Both players in one session, P2P UDP visible between 26.x addresses |
+| 4. Stabilization | Handling disconnects, reconnecting, returning to the menu cleanly | Several chapters in a row without drops |
+| 5. Convenience | One-click start: emulator + `hosts` edit + firewall rules | The second player is set up in a minute |
 
-Этапы 1–3 сделаны собственным сервером на раскладках Pocket Relay Server и определениях Aim4kill/BlazeSDK (см. [architecture.md](architecture.md)).
+Stages 1–3 are done with our own server, built on the message layouts of Pocket Relay Server and the definitions from Aim4kill/BlazeSDK (see [architecture.md](architecture.md)).
 
-## Риски и открытые вопросы
+## Risks and open questions
 
-1. **SSL-обход.** Снят на этапе 1: сертификат из `blaze-ssl-async` игра принимает, патч ProtoSSL не нужен.
-2. **Ответ `fetchClientConfig`.** Снят на этапе 2: игра запрашивает только `BlazeSDK` (в `preAuth`) и `MessageOfTheDay`, пустых ответов ей хватает.
-3. **Атрибуты игры и матчмейкинг.** Правила матчмейкинга DS3 (глава, сложность, DLC) неизвестны; на первом этапе эмулятор может сводить любые две сессии.
-4. **Начальные данные.** Стоит заранее проверить, что игра не требует от Blaze прогресса или инвентаря (`Locker`, `userSettingsLoadAll`): если требует, пустые ответы могут повредить локальные сохранения. До начала тестов сделайте резервную копию сохранений.
-5. **Брандмауэр.** Radmin VPN часто попадает в профиль «Общедоступная сеть», и Windows режет входящий UDP. Нужно правило для `deadspace3.exe` и для эмулятора. Профиль сети и состояние брандмауэра показывает `net-check` ([network-checks.md](network-checks.md)).
-6. **Обновления EA App.** На Blaze они не влияют, но запуск игры по-прежнему зависит от EA App (DRM и Origin SDK).
+1. **SSL bypass.** Resolved at stage 1: the game accepts the certificate from `blaze-ssl-async`, no ProtoSSL patch is needed.
+2. **`fetchClientConfig` response.** Resolved at stage 2: the game requests only `BlazeSDK` (in `preAuth`) and `MessageOfTheDay`, and empty responses are enough.
+3. **Game attributes and matchmaking.** DS3's matchmaking rules (chapter, difficulty, DLC) are unknown; at first the emulator may pair any two sessions.
+4. **Initial data.** It is worth checking in advance that the game does not require progress or inventory from Blaze (`Locker`, `userSettingsLoadAll`): if it does, empty responses could damage local saves. Back up your saves before testing.
+5. **Firewall.** Radmin VPN often lands in the "Public network" profile, and Windows blocks inbound UDP. A rule is needed for `deadspace3.exe` and for the emulator. `net-check` shows the network profile and the firewall state ([network-checks.md](network-checks.md)).
+6. **EA App updates.** They do not affect Blaze, but launching the game still depends on the EA App (DRM and the Origin SDK).

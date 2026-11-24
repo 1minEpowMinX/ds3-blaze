@@ -1,12 +1,12 @@
-# Документация
+# Documentation
 
-Объект исследования: Dead Space 3 для PC (Steam-версия, запуск через EA App). Анализ начат 24.11.2026.
+Subject: Dead Space 3 for PC (Steam version, launched through the EA App). Analysis started on 2026-11-24.
 
-| Файл | Содержание |
+| File | Contents |
 |---|---|
-| [game.md](game.md) | Что известно из exe: версия BlazeSDK, доверенные корни SSL, сетевой стек P2P, шифрование кода |
-| [captures.md](captures.md) | Захваты трафика с серверами EA: вход, QoS, NAT игрока, demangler, UDP между игроками |
-| [protocol.md](protocol.md) | Что игра требует от Blaze-сервера, по этапам: редиректор, логин, комната хоста, второй игрок |
-| [architecture.md](architecture.md) | Схема с эмулятором и VPN, готовые наработки, источники |
-| [network-checks.md](network-checks.md) | Проверка сети между игроками до запуска игры |
-| [plan.md](plan.md) | Этапы работ с их состоянием, риски и открытые вопросы |
+| [game.md](game.md) | What the exe reveals: BlazeSDK version, trusted SSL roots, the P2P network stack, code encryption |
+| [captures.md](captures.md) | Traffic captures against EA's servers: login, QoS, the player's NAT, demangler, UDP between players |
+| [protocol.md](protocol.md) | What the game requires from a Blaze server, stage by stage: redirector, login, host's room, second player |
+| [architecture.md](architecture.md) | Layout with the emulator and a VPN, existing work, sources |
+| [network-checks.md](network-checks.md) | Checking the network between players before launching the game |
+| [plan.md](plan.md) | Work stages and their status, risks and open questions |

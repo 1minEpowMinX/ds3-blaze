@@ -13,7 +13,7 @@ The game is still launched through the EA App; the server replaces Blaze only.
 | Host's room | works in game: create, play, quit with a save |
 | Second player | works in game through quick match and through an EA App invite |
 
-Protocol analysis, traffic captures and the work plan (in Russian): [docs/](docs/README.md).
+Protocol analysis, traffic captures and the work plan: [docs/](docs/README.md).
 
 ## Getting it
 

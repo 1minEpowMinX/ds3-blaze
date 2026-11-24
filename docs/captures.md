@@ -1,88 +1,88 @@
-# Захваты трафика с серверами EA
+# Traffic captures against EA's servers
 
-## Захват №1 (24.11.2026, `DS3_Net_Packages\Capture#1.pcapng`)
+## Capture #1 (2026-11-24, `DS3_Net_Packages\Capture#1.pcapng`)
 
-Файл содержит 106 пакетов: только DNS и одно TCP-соединение с редиректором (похоже, сохранён с фильтром `dns || tcp.port == 42127`). Последовательность входа в онлайн:
+The file holds 106 packets: only DNS and one TCP connection to the redirector (it looks as if it was saved with the filter `dns || tcp.port == 42127`). The online login sequence:
 
-| Время, с | Событие |
+| Time, s | Event |
 |---|---|
-| 0–52 | Трафик EA App (`*.juno.ea.com`, `accounts.ea.com`, `friends.gs.ea.com`, `gateway.ea.com`): авторизация, друзья, облачные сохранения. К Blaze не относится |
-| 65,2–67,5 | Три DNS-запроса `gosredirector.ea.com` → `159.153.51.18` |
-| 67,6–71,9 | TCP к `159.153.51.18:42127`: три повтора SYN, SYN-ACK приходит через 4,3 с |
-| 71,9–77,4 | Рукопожатие SSLv3 и один обмен запрос/ответ (245 и 117 байт полезной нагрузки), затем клиент закрывает соединение |
-| 77,4 | DNS `gsprodblapp-03.ea.com` → `159.153.73.13`: основной Blaze-сервер из ответа редиректора |
-| 78,0 | DNS четырёх QoS-серверов: `gosnrtprod-qos01`, `gosgvaprod-qos01`, `gosiadprod-qos01`, `gossjcprod-qos01` (`*.ea.com`). Значит, вход на основной сервер прошёл и клиент получил конфигурацию QoS |
-| 89,1 | DNS `gos.ea.com` → `159.153.71.19` (вероятно, телеметрия или тикер из `postAuth`) |
+| 0–52 | EA App traffic (`*.juno.ea.com`, `accounts.ea.com`, `friends.gs.ea.com`, `gateway.ea.com`): authorization, friends, cloud saves. Unrelated to Blaze |
+| 65.2–67.5 | Three DNS queries `gosredirector.ea.com` → `159.153.51.18` |
+| 67.6–71.9 | TCP to `159.153.51.18:42127`: three SYN retries, the SYN-ACK arrives after 4.3 s |
+| 71.9–77.4 | SSLv3 handshake and one request/response exchange (245 and 117 bytes of payload), then the client closes the connection |
+| 77.4 | DNS `gsprodblapp-03.ea.com` → `159.153.73.13`: the main Blaze server from the redirector's response |
+| 78.0 | DNS for four QoS servers: `gosnrtprod-qos01`, `gosgvaprod-qos01`, `gosiadprod-qos01`, `gossjcprod-qos01` (`*.ea.com`). So the login to the main server succeeded and the client received the QoS configuration |
+| 89.1 | DNS `gos.ea.com` → `159.153.71.19` (probably telemetry or the ticker from `postAuth`) |
 
-Параметры SSL из рукопожатия:
+SSL parameters from the handshake:
 
-- Протокол SSL 3.0. Клиент предлагает `TLS_RSA_WITH_RC4_128_SHA`, `TLS_RSA_WITH_RC4_128_MD5`, `TLS_RSA_WITH_AES_128_CBC_SHA`, `TLS_RSA_WITH_AES_256_CBC_SHA`; сервер EA выбирает AES-256. ProtoSSL здесь новее, чем в ME3 (там только RC4), но RC4 по-прежнему в списке, поэтому `blaze-ssl-async` подходит без доработки шифров.
-- Сертификат сервера: `CN=gosredirector.ea.com, OU=Global Online Studio`, выдан `OTG3 Certificate Authority` (`dirtysock-contact@ea.com`), подпись `md5WithRSAEncryption`, срок с 07.05.2015 по 02.05.2035, серийный номер `0x03C2`. Цепочка из одного звена, корень OTG3 встроен в игру.
+- Protocol SSL 3.0. The client offers `TLS_RSA_WITH_RC4_128_SHA`, `TLS_RSA_WITH_RC4_128_MD5`, `TLS_RSA_WITH_AES_128_CBC_SHA`, `TLS_RSA_WITH_AES_256_CBC_SHA`; EA's server picks AES-256. ProtoSSL here is newer than in ME3 (which has only RC4), but RC4 is still in the list, so `blaze-ssl-async` fits without changes to its ciphers.
+- Server certificate: `CN=gosredirector.ea.com, OU=Global Online Studio`, issued by `OTG3 Certificate Authority` (`dirtysock-contact@ea.com`), signature `md5WithRSAEncryption`, valid from 2015-05-07 to 2035-05-02, serial number `0x03C2`. A single-link chain; the OTG3 root is built into the game.
 
-Отдельное наблюдение: установка соединения с официальным редиректором заняла около 4 с из-за потерянных SYN/SYN-ACK. Это прямое подтверждение нестабильности инфраструктуры EA уже на первом шаге.
+A side observation: establishing the connection to the official redirector took about 4 s because of lost SYN/SYN-ACK packets. This directly confirms that EA's infrastructure is unstable from the very first step.
 
-Содержимое Blaze-сообщений редиректора зашифровано (RSA-обмен ключами), и без закрытого ключа сервера EA его не расшифровать. Структура запроса известна по ME3 (`getServerInstance` с `deadspace-3-pc`), её подтвердит собственный редиректор.
+The content of the redirector's Blaze messages is encrypted (RSA key exchange) and cannot be decrypted without EA's server private key. The request structure is known from ME3 (`getServerInstance` with `deadspace-3-pc`); our own redirector will confirm it.
 
-## Захват №2 (24.11.2026, `DS3_Net_Packages\Capture#2.pcapng`, без фильтра)
+## Capture #2 (2026-11-24, `DS3_Net_Packages\Capture#2.pcapng`, unfiltered)
 
-Сценарий: вход в онлайн, матчмейкинг к случайному хосту, кик примерно через 20 с. Посторонний трафик (RDP с `192.168.1.3`, Steam, Teredo, EA App по 443) исключён. Версия DirtySDK из заголовка `User-Agent`: `ProtoHttp 1.3/DS 8.18.8.0`.
+Scenario: online login, matchmaking into a random host's game, kick after about 20 s. Unrelated traffic (RDP from `192.168.1.3`, Steam, Teredo, EA App over 443) is excluded. DirtySDK version from the `User-Agent` header: `ProtoHttp 1.3/DS 8.18.8.0`.
 
-| Время, с | Событие |
+| Time, s | Event |
 |---|---|
-| 44,6–46,4 | UPnP: SSDP-поиск, `GetExternalIPAddress` → роутер отвечает **`0.0.0.0`**; затем `GetSpecificPortMappingEntry`, `DeletePortMapping`, `AddPortMapping` UDP 3659 → `192.168.1.4:3659`, описание `EA Tunnel`, аренда 14400 с |
-| 46,0 | Редиректор `159.153.51.18:42127` (SSLv3) |
-| 47,3 | Основной Blaze: `gsprodblapp-03.ea.com` = **`159.153.73.13:10323`, тоже SSLv3**. Сообщения Blaze зашифрованы и в захвате не читаются |
-| 47,8–55,2 | QoS (открытый HTTP и UDP, см. ниже) |
-| 55,9–57,0 | `http://gos.ea.com/easo/editorial/Deadspace/3/MessageOfDay/pc/mod_ru.txt`, `mod_mp_ru.txt`, `mod_onlinepass_ru.txt`: сообщения дня, открытый HTTP |
-| 66,6 | Запрос клиента 743 байта (матчмейкинг или вход в игру), ответ сервера около 3 КБ (по размеру похоже на `NotifyGameSetup` с данными хоста) |
-| 66,8–86,8 | UDP `192.168.1.4:3659` → `<IP хоста>:3659` (хост): 40 пакетов, **ни одного ответа** |
-| 76,9–78,4 | Demangler (ProtoMangle) по открытому HTTP, см. ниже. Итог: `status=success`, `peerIP=<IP хоста>`, `peerPort=3659`, но связи всё равно нет |
-| 86,6 | Новый обмен с Blaze, после этого кик |
+| 44.6–46.4 | UPnP: SSDP discovery, `GetExternalIPAddress` → the router answers **`0.0.0.0`**; then `GetSpecificPortMappingEntry`, `DeletePortMapping`, `AddPortMapping` UDP 3659 → `192.168.1.4:3659`, description `EA Tunnel`, lease 14400 s |
+| 46.0 | Redirector `159.153.51.18:42127` (SSLv3) |
+| 47.3 | Main Blaze: `gsprodblapp-03.ea.com` = **`159.153.73.13:10323`, also SSLv3**. Blaze messages are encrypted and unreadable in the capture |
+| 47.8–55.2 | QoS (plain HTTP and UDP, see below) |
+| 55.9–57.0 | `http://gos.ea.com/easo/editorial/Deadspace/3/MessageOfDay/pc/mod_ru.txt`, `mod_mp_ru.txt`, `mod_onlinepass_ru.txt`: messages of the day, plain HTTP |
+| 66.6 | A 743-byte client request (matchmaking or joining a game), a server response of about 3 KB (by its size it looks like `NotifyGameSetup` with the host's data) |
+| 66.8–86.8 | UDP `192.168.1.4:3659` → `<host IP>:3659` (the host): 40 packets, **not a single reply** |
+| 76.9–78.4 | Demangler (ProtoMangle) over plain HTTP, see below. Outcome: `status=success`, `peerIP=<host IP>`, `peerPort=3659`, yet there is still no connection |
+| 86.6 | A new exchange with Blaze, followed by the kick |
 
 ### QoS
 
-Порты: HTTP `17502` (TCP), эхо-пробы `17499` (UDP), проверка файрвола `17500`, `17501` (UDP). Ответы в XML с заголовками `X-BLAZE-COMPONENT: qos`, `X-BLAZE-COMMAND: qos|firewall|firetype`, `X-BLAZE-SEQNO`:
+Ports: HTTP `17502` (TCP), echo probes `17499` (UDP), firewall check `17500`, `17501` (UDP). Responses are XML with the headers `X-BLAZE-COMPONENT: qos`, `X-BLAZE-COMMAND: qos|firewall|firetype`, `X-BLAZE-SEQNO`:
 
 ```
 GET /qos/qos?vers=1&qtyp=1&prpt=3659       → <qos><numprobes>0</numprobes><qosport>17499</qosport><probesize>0</probesize><qosip>…</qosip><requestid>1</requestid><reqsecret>0</reqsecret></qos>
-GET /qos/qos?vers=1&qtyp=2&prpt=3659       → numprobes=10, probesize=1200, requestid=965, reqsecret=867 (замер пропускной способности)
+GET /qos/qos?vers=1&qtyp=2&prpt=3659       → numprobes=10, probesize=1200, requestid=965, reqsecret=867 (bandwidth measurement)
 GET /qos/firewall?vers=1&nint=2            → <firewall><ips><ips>…</ips>×2</ips><numinterfaces>2</numinterfaces><ports><ports>17500</ports><ports>17501</ports></ports><requestid>1437</requestid><reqsecret>406</reqsecret></firewall>
 GET /qos/firetype?vers=1&rqid=1437&rqsc=406&inip=-1062731516&inpt=3659 → <firetype><firetype>4</firetype></firetype>
 ```
 
-`qosip` и `inip` передаются как 32-битное целое (`inip=-1062731516` = `192.168.1.4`).
+`qosip` and `inip` are sent as 32-bit integers (`inip=-1062731516` = `192.168.1.4`).
 
-Состояние серверов QoS EA: из четырёх сайтов отвечают только два (`gosiadprod-qos01` `159.153.52.14` и `gossjcprod-qos01` `162.244.53.174`). `gosnrtprod-qos01` и `gosgvaprod-qos01` не отвечают на SYN. Пробы на `17500`/`17501` остались без ответа, поэтому тест файрвола не завершился и тип NAT вышел `4` (по порядку перечисления Blaze, вероятно, `NAT_TYPE_UNKNOWN`).
+State of EA's QoS servers: of the four sites, only two respond (`gosiadprod-qos01` `159.153.52.14` and `gossjcprod-qos01` `162.244.53.174`). `gosnrtprod-qos01` and `gosgvaprod-qos01` do not answer SYN. The probes to `17500`/`17501` got no reply, so the firewall test did not finish and the NAT type came out as `4` (by the order of the Blaze enum, probably `NAT_TYPE_UNKNOWN`).
 
-### Сеть игрока: симметричный NAT за провайдером
+### The player's network: symmetric NAT behind the ISP
 
-UDP-ответы QoS (38 байт) содержат внешний адрес клиента, каким его видит сервер:
+The QoS UDP replies (38 bytes) contain the client's external address as the server sees it:
 
-| Сервер QoS | Внешний адрес клиента |
+| QoS server | Client's external address |
 |---|---|
-| `159.153.52.14` | `<внешний IP игрока>:22937` |
-| `162.244.53.174` | `<внешний IP игрока>:9653` |
+| `159.153.52.14` | `<player's external IP>:22937` |
+| `162.244.53.174` | `<player's external IP>:9653` |
 
-С одного локального порта 3659 на разные серверы получаются разные внешние порты. Это симметричный NAT (сопоставление зависит от адресата). Вместе с `NewExternalIPAddress = 0.0.0.0` от роутера это почти наверняка CGNAT провайдера: проброс порта через UPnP открывает его только на домашнем роутере, а до интернета он не доходит. Пробить такой NAT методом ProtoMangle (угадывание порта) невозможно, что и видно в захвате: хост не получил ни одного пакета, а игра через 20 с выкинула клиента.
+The same local port 3659 maps to different external ports for different servers. This is symmetric NAT (the mapping depends on the destination). Together with `NewExternalIPAddress = 0.0.0.0` from the router, it is almost certainly the ISP's CGNAT: a UPnP port mapping opens the port only on the home router and never reaches the internet. ProtoMangle's method (guessing the port) cannot get through such a NAT, which is exactly what the capture shows: the host did not receive a single packet, and after 20 s the game kicked the client.
 
-Это и есть основная причина проблем с подключением. Схема с VPN снимает её полностью, потому что UDP идёт внутри туннеля Radmin, и NAT провайдера туннелю не мешает.
+This is the main cause of the connection problems. The VPN layout removes it completely, because UDP travels inside the Radmin tunnel and the ISP's NAT does not interfere with the tunnel.
 
 ### Demangler (ProtoMangle)
 
-Открытый HTTP на `demangler.ea.com:3658` (CNAME `demangler.prod.legacy.gs.ea.com`), cookie `sessionID=<id сессии>`:
+Plain HTTP on `demangler.ea.com:3658` (CNAME `demangler.prod.legacy.gs.ea.com`), cookie `sessionID=<session id>`:
 
 ```
 GET /getPeerAddress?myIP=192.168.1.4&myPort=3659&version=1.0
 → status=probe / targetIP-N, targetPort-N, sourcePort-N, tag-N=probe1|probe2|probe3.x|prober:<id>:0, sendCount-N
-→ … (6 раундов, UDP-пробы на 3.83.166.41:10000 и 54.152.64.208:10000 с разных исходных портов)
-→ status=success / peerIP=<IP хоста> / peerPort=3659
+→ … (6 rounds, UDP probes to 3.83.166.41:10000 and 54.152.64.208:10000 from different source ports)
+→ status=success / peerIP=<host IP> / peerPort=3659
 ```
 
-Протокол простой и текстовый, поэтому при необходимости его легко эмулировать: сразу отвечать `status=success` с VPN-адресом партнёра.
+The protocol is simple and text-based, so it is easy to emulate if needed: answer `status=success` with the peer's VPN address right away.
 
-### UDP между игроками
+### UDP between players
 
-Порт игры: **3659** (в обе стороны: и локальный, и у хоста). Два типа пакетов:
+Game port: **3659** (on both ends: locally and on the host). Two packet types:
 
-- 74 байта, раз в 0,5 с: заголовок, затем `434f6500`, идентификатор сессии (тот же, что в cookie demangler), строка `$0401a8c0` (внутренний IP `192.168.1.4` в шестнадцатеричном виде, обратный порядок байтов) и `-1554058313`. По формату это запрос соединения ProtoTunnel/NetGameLink.
-- 24 байта, раз в 1 с: зашифрованы (ключ туннеля раздаёт Blaze).
+- 74 bytes, every 0.5 s: a header, then `434f6500`, the session id (the same as in the demangler cookie), the string `$0401a8c0` (the internal IP `192.168.1.4` in hex, reversed byte order) and `-1554058313`. By its format this is a ProtoTunnel/NetGameLink connection request.
+- 24 bytes, every 1 s: encrypted (Blaze hands out the tunnel key).

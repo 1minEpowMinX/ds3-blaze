@@ -1,40 +1,40 @@
-# Архитектура
+# Architecture
 
 
 ```
- Игрок A (хост)                                Игрок B
+ Player A (host)                               Player B
  ┌───────────────────────────┐                 ┌──────────────────────┐
  │ deadspace3.exe            │                 │ deadspace3.exe       │
  │  └ hosts:                 │                 │  └ hosts:            │
  │    gosredirector → 26.x.A │                 │    gosredirector →   │
- │ ds3-blaze (эмулятор)      │◄── Blaze/TCP ───┤    26.x.A            │
- │  :42127 редиректор+SSLv3  │    по VPN       │                      │
+ │ ds3-blaze (emulator)      │◄── Blaze/TCP ───┤    26.x.A            │
+ │  :42127 redirector+SSLv3  │    over VPN     │                      │
  │  :Blaze main, :QoS HTTP   │                 │                      │
  └────────────┬──────────────┘                 └──────────┬───────────┘
               └──────────── P2P UDP (ProtoTunnel) ────────┘
-                         напрямую по Radmin VPN 26.x.x.x
+                         directly over Radmin VPN 26.x.x.x
 ```
 
-- Эмулятор запускается у хоста (или на любом ПК в той же VPN). Внешний VPS не нужен.
-- Для `NetworkAddress` каждого клиента эмулятор подставляет адрес, с которого пришло TCP-соединение (то есть VPN-адрес) и как внутренний, и как внешний. Так P2P гарантированно идёт через VPN, а demangler EA не нужен.
-- Origin-токен эмулятор принимает любой и к EA за проверкой не обращается. Имя игрока задают ключи `--name` и `--player IP=NAME`.
-- QoS эмулятор отдаёт сам (HTTP и UDP-эхо) в формате из захвата №2 ([captures.md](captures.md)), указывая свой адрес. Demangler EA не перенаправляется: адреса партнёров и так VPN-адреса, и в игре P2P устанавливается без него.
-- Порт игры UDP 3659 должен быть открыт во входящих на VPN-адаптере у обоих игроков; это проверяет `p2p-check` ([network-checks.md](network-checks.md)).
-- Гость попадает в комнату хоста «быстрой игрой» (публичная комната) или по приглашению из EA App (частная). Оба пути проверены в игре, подробности в разделе «Второй игрок» в [protocol.md](protocol.md). Списков игр эмулятор не ведёт.
+- The emulator runs on the host's PC (or on any PC in the same VPN). No external VPS is needed.
+- For each client's `NetworkAddress`, the emulator substitutes the address the TCP connection came from (that is, the VPN address) as both the internal and the external one. This guarantees that P2P goes through the VPN, and EA's demangler is not needed.
+- The emulator accepts any Origin token and never asks EA to verify it. The player's name is set by the `--name` and `--player IP=NAME` options.
+- The emulator serves QoS itself (HTTP and UDP echo) in the format from capture #2 ([captures.md](captures.md)), giving its own address. EA's demangler is not redirected: the peers' addresses are VPN addresses anyway, and in game P2P is established without it.
+- The game's UDP port 3659 must be open for inbound traffic on the VPN adapter of both players; `p2p-check` verifies this ([network-checks.md](network-checks.md)).
+- The guest gets into the host's room through quick match (a public room) or through an EA App invite (a private room). Both paths are confirmed in game; details are in the "Second player" section of [protocol.md](protocol.md). The emulator keeps no game lists.
 
-## Существующие наработки
+## Existing work
 
-| Проект | Что даёт | Применимость к DS3 |
+| Project | What it provides | Relevance to DS3 |
 |---|---|---|
-| [PocketRelay/Server](https://github.com/PocketRelay/Server) (Rust) | Полный Blaze-эмулятор ME3: редиректор, SSLv3, TDF, GameManager, матчмейкинг, QoS, работа в LAN/WAN, опциональная проверка Origin-токенов у EA | Источник раскладок сообщений и компонентов; сервер написан заново под DS3, заимствования указаны в заголовках исходников |
-| [jacobtread/blaze-ssl-async](https://github.com/jacobtread/blaze-ssl-async) | SSLv3 (RC4-SHA/MD5) и сертификат-обход для старого ProtoSSL | Используется как зависимость; DS3 принимает сертификат-обход |
-| [PocketRelay/Client](https://github.com/PocketRelay/Client) | Перенаправление клиента ME3 на свой сервер; в `/legacy` патч проверки сертификата из [masseffect-binkw32](https://github.com/Erik-JS/masseffect-binkw32) | Не понадобился: DS3 хватает правки `hosts` |
-| [Aim4kill/BlazeSDK](https://github.com/Aim4kill/BlazeSDK) (C#) | Библиотека для Blaze-сервера: `Blaze2SDK`, `Blaze3SDK`, `EATDF`, `ProtoFire`, пример редиректора Blaze 3 | Источник определений команд и TDF Blaze 3; номера команд совпадают со строками exe DS3 |
-| [PrivateServerEmulator/ME3PSE](https://github.com/PrivateServerEmulator/ME3PSE) (C#) | Старый эмулятор ME3 | Справочно |
+| [PocketRelay/Server](https://github.com/PocketRelay/Server) (Rust) | A complete ME3 Blaze emulator: redirector, SSLv3, TDF, GameManager, matchmaking, QoS, LAN/WAN operation, optional Origin token verification with EA | Source of message and component layouts; the server is written anew for DS3, and borrowings are credited in the source file headers |
+| [jacobtread/blaze-ssl-async](https://github.com/jacobtread/blaze-ssl-async) | SSLv3 (RC4-SHA/MD5) and a bypass certificate for old ProtoSSL | Used as a dependency; DS3 accepts the bypass certificate |
+| [PocketRelay/Client](https://github.com/PocketRelay/Client) | Redirects the ME3 client to a custom server; `/legacy` holds the certificate check patch from [masseffect-binkw32](https://github.com/Erik-JS/masseffect-binkw32) | Not needed: a `hosts` edit is enough for DS3 |
+| [Aim4kill/BlazeSDK](https://github.com/Aim4kill/BlazeSDK) (C#) | A library for Blaze servers: `Blaze2SDK`, `Blaze3SDK`, `EATDF`, `ProtoFire`, a sample Blaze 3 redirector | Source of Blaze 3 command and TDF definitions; command numbers match the strings in the DS3 exe |
+| [PrivateServerEmulator/ME3PSE](https://github.com/PrivateServerEmulator/ME3PSE) (C#) | An old ME3 emulator | For reference |
 
-Готового эмулятора для Dead Space 3 найти не удалось. Официальные серверы DS3, судя по всему, не закрыты (в отличие от DS2, отключённого 08.12.2023), но игроки массово жалуются на `Failed to join game`, а в обсуждениях советуют Hamachi и публичные сессии вместо приватных.
+No ready-made emulator for Dead Space 3 could be found. The official DS3 servers appear to still be up (unlike DS2, shut down on 2023-12-08), but players widely complain about `Failed to join game`, and discussions recommend Hamachi and public sessions instead of private ones.
 
-## Источники
+## Sources
 
 - [PocketRelay](https://github.com/PocketRelay), [blaze-ssl-async](https://github.com/jacobtread/blaze-ssl-async), [Aim4kill/BlazeSDK](https://github.com/Aim4kill/BlazeSDK), [ME3PSE](https://github.com/PrivateServerEmulator/ME3PSE)
 - [EA Forums: Dead Space 3 (PC) Failed To Join Game](https://forums.ea.com/discussions/dead-space-franchise-discussion-en/dead-space-3-pc-failed-to-join-game-error/7229623)

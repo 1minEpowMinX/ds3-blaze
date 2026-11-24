@@ -1,14 +1,14 @@
-# Проверка сети до запуска игры
+# Checking the network before launching the game
 
-Все проверки работают без игры.
+None of the checks needs the game.
 
-1. `ds3-blaze net-check --peer <VPN-адрес другого ПК>` читает настройки Windows через PowerShell (NetTCPIP, NetAdapter, NetSecurity) и проверяет:
-   - через какой адаптер Windows отправит трафик партнёру (`Find-NetRoute`) и известный ли это VPN;
-   - лежит ли адрес партнёра в сети этого адаптера (маршрут без шлюза);
-   - какие ещё VPN-адаптеры подняты и не перехватывают ли они адрес партнёра;
-   - к какой категории относится сеть («Общедоступная» или «Частная») и включён ли брандмауэр в этом профиле;
-   - какие правила для `deadspace3.exe` (входящий UDP) и `ds3-blaze.exe` (входящие TCP и UDP) действуют в этом профиле, в том числе запрещающие: они сильнее разрешающих.
+1. `ds3-blaze net-check --peer <other PC's VPN address>` reads the Windows settings through PowerShell (NetTCPIP, NetAdapter, NetSecurity) and checks:
+   - which adapter Windows will use to send traffic to the peer (`Find-NetRoute`) and whether it is a known VPN;
+   - whether the peer's address lies in that adapter's network (a route without a gateway);
+   - which other VPN adapters are up and whether they capture the peer's address;
+   - which category the network belongs to ("Public" or "Private") and whether the firewall is on in that profile;
+   - which rules for `deadspace3.exe` (inbound UDP) and `ds3-blaze.exe` (inbound TCP and UDP) apply in that profile, including blocking rules: they take precedence over allowing ones.
 
-   Сторонние брандмауэры команда только называет, их правила она не видит.
-2. `ds3-blaze p2p-check --peer <VPN-адрес другого ПК>` сначала выполняет `net-check`, затем запускается на обоих ПК одновременно. Каждая сторона шлёт UDP-пинги на порт 3659 с порта 3659, как это делает игра, и отвечает на пинги другой стороны. По итогу видно, в каком направлении пакеты не доходят.
-3. `ds3-blaze selftest --host <VPN-адрес хоста>` запускается у гостя при работающем `serve` у хоста. Он проходит весь путь гостя через VPN: редиректор, логин, вход в комнату через подбор и `joinGame`, QoS по HTTP и UDP.
+   Third-party firewalls are only named; the command cannot see their rules.
+2. `ds3-blaze p2p-check --peer <other PC's VPN address>` runs `net-check` first and is then started on both PCs at the same time. Each side sends UDP pings to port 3659 from port 3659, as the game does, and answers the other side's pings. The result shows in which direction packets do not arrive.
+3. `ds3-blaze selftest --host <host's VPN address>` runs on the guest's PC while the host runs `serve`. It goes through the guest's whole path over the VPN: redirector, login, joining a room through matchmaking and `joinGame`, QoS over HTTP and UDP.
