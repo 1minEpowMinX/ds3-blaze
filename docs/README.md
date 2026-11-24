@@ -26,3 +26,9 @@ How ds3-blaze answers that research, and in what stages.
 | File | Contents |
 |---|---|
 | [network-checks.md](guides/network-checks.md) | Checking the network between players before launching the game |
+
+## Publishing
+
+| File | Contents |
+|---|---|
+| [nexus/](nexus/description.bbcode.txt) | Text of the Nexus Mods page, in BBCode. It repeats the main path of "Running" in the top-level README, so a change to those commands goes into both |
