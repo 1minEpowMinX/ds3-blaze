@@ -30,7 +30,7 @@ body = """
 {% endfor %}\
 {% if steps | length > 0 %}
 
-## Action required
+## ⚠️ Action required
 {% for step in steps %}
 * {{ step }}
 {%- endfor %}
@@ -50,7 +50,7 @@ body = """
 {% endfor %}\
 {% if breaks | length > 0 %}
 
-## Breaking changes
+## 💥 Breaking changes
 {% for entry in breaks %}
 {{ entry }}
 {%- endfor %}
@@ -58,10 +58,44 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
 
 ## {{ group | striptags | trim }}
-{% for commit in commits %}
+{# Other changes are documentation and internal work, which a player reading
+   the release skips, so the section is folded under its commit count. The
+   blank line after </summary> lets GitHub render the list inside the block as
+   Markdown. #}\
+{% if group is ending_with("Other changes") %}
+<details>
+<summary>{{ commits | length }} commit{{ commits | length | pluralize }}</summary>
+{% endif %}\
+{# Entries without a scope come first, then one run per scope in alphabetical
+   order, so that equal prefixes stand together; commit order holds within
+   each run. Tera's sort rejects null, so the commits are not sorted by their
+   scope attribute: the scopes are collected as strings and sorted instead. #}\
+{% set_global scopes = [] %}\
+{% for commit in commits %}\
+{% if commit.scope and commit.scope not in scopes %}\
+{% set_global scopes = scopes | concat(with=commit.scope) %}\
+{% endif %}\
+{% endfor %}\
+{% set_global entries = [] %}\
+{% for commit in commits %}\
+{% if not commit.scope %}\
+{% set_global entries = entries | concat(with=commit) %}\
+{% endif %}\
+{% endfor %}\
+{% for scope in scopes | sort %}\
+{% for commit in commits %}\
+{% if commit.scope == scope %}\
+{% set_global entries = entries | concat(with=commit) %}\
+{% endif %}\
+{% endfor %}\
+{% endfor %}\
+{% for commit in entries %}
 {% set short = commit.id | truncate(length=7, end="") %}\
 * {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | upper_first }} ([`{{ short }}`]({{ repo }}/commit/{{ commit.id }}))
 {%- endfor %}
+{% if group is ending_with("Other changes") %}
+</details>
+{% endif %}\
 {% endfor %}\
 {% if previous.version %}
 
@@ -94,12 +128,12 @@ sort_commits = "oldest"
 # sections, and the type of an entry is legible from its text. Breaking changes
 # and deployment steps are lifted out of these sections by the template.
 commit_parsers = [
-  { message = "^feat", group = "<!-- 00 -->New features" },
-  { message = "^perf", group = "<!-- 00 -->New features" },
-  { message = "^security", group = "<!-- 01 -->Security" },
-  { message = "^fix", group = "<!-- 02 -->Bug fixes" },
+  { message = "^feat", group = "<!-- 00 -->✨ New features" },
+  { message = "^perf", group = "<!-- 00 -->✨ New features" },
+  { message = "^security", group = "<!-- 01 -->🔒 Security" },
+  { message = "^fix", group = "<!-- 02 -->🐛 Bug fixes" },
   # Merge commits describe the branch; the commits they carry are listed
   # individually.
   { message = "^Merge ", skip = true },
-  { message = ".*", group = "<!-- 03 -->Other changes" },
+  { message = ".*", group = "<!-- 03 -->🧹 Other changes" },
 ]
