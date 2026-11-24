@@ -1,8 +1,11 @@
 name: Release draft
 
+# A tag v<version> matching ds3-blaze/Cargo.toml produces a draft release: the
+# archive from tools/package.ps1 and notes rendered from cliff.toml, which open
+# with the tag's annotation.
 on:
   push:
-    tags: ['v*']
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
 
 jobs:
   ci:
@@ -19,24 +22,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # Release notes need the previous tag and the commits since it.
+          # git-cliff reads the history between tags, which a shallow clone
+          # does not carry.
           fetch-depth: 0
+      # On a tag push actions/checkout can leave the tag as a lightweight ref
+      # pointing at the commit, which drops the annotation the notes open with.
+      # Fetching the tag ref again restores the tag object.
+      - name: Fetch the annotated tag
+        shell: pwsh
+        run: git fetch --force origin "refs/tags/${env:GITHUB_REF_NAME}:refs/tags/${env:GITHUB_REF_NAME}"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ds3-blaze
-      - name: Package
-        id: package
+      # package.ps1 fails when the tag does not match the crate version.
+      - name: Build the archive
         shell: pwsh
-        run: |
-          $archive = ./tools/package.ps1 -Tag $env:GITHUB_REF_NAME | Select-Object -Last 1
-          "archive=$archive" >> $env:GITHUB_OUTPUT
-      - name: Release notes
-        shell: pwsh
-        run: ./tools/release-notes.ps1 -Tag $env:GITHUB_REF_NAME -OutFile dist/notes.md
-      - name: Create draft release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARCHIVE: ${{ steps.package.outputs.archive }}
-        run: gh release create $env:GITHUB_REF_NAME --draft --verify-tag --title $env:GITHUB_REF_NAME --notes-file dist/notes.md $env:ARCHIVE "$env:ARCHIVE.sha256"
+        run: ./tools/package.ps1 -Tag $env:GITHUB_REF_NAME
+      - name: Render the notes
+        id: cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --current
+      # An existing draft for the tag is reused: its body is replaced and its
+      # assets are overwritten. fail_on_unmatched_files turns a missing archive
+      # into a failure rather than a release without assets.
+      - name: Create the draft
+        uses: softprops/action-gh-release@v3
+        with:
+          body: ${{ steps.cliff.outputs.content }}
+          files: |
+            dist/*.zip
+            dist/*.zip.sha256
+          fail_on_unmatched_files: true
+          draft: true

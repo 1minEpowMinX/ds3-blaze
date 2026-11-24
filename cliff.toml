@@ -1,0 +1,105 @@
+# Release notes rendered by git-cliff from the Conventional Commits history.
+#
+# The body opens with the message of the annotated release tag, which is the
+# human-written summary; every section below it is derived from the commits
+# since the previous tag. The release workflow renders it with --current;
+# `git cliff --unreleased` previews the next release locally.
+
+[changelog]
+header = ""
+
+body = """
+{% set repo = "https://github.com/1minEpowMinX/ds3-blaze" %}\
+{# A lightweight tag has no message, and a tag annotated with nothing but its
+   own name carries no summary either. #}\
+{% if message and message | trim != version %}\
+{{ message | trim }}
+{% endif %}\
+{# Deployment prerequisites, collected from the Deploy: trailer of the commit
+   that created each one. Each trailer stands alone in the rendered list, which
+   is why the convention asks for a self-contained instruction. #}\
+{% set_global steps = [] %}\
+{% for commit in commits %}\
+{# A commit outside the convention has no footers field, and an unguarded
+   access to it fails the whole render. #}\
+{% for footer in commit.footers | default(value=[]) %}\
+{% if footer.token == "Deploy" %}\
+{% set_global steps = steps | concat(with=footer.value) %}\
+{% endif %}\
+{% endfor %}\
+{% endfor %}\
+{% if steps | length > 0 %}
+
+## Action required
+{% for step in steps %}
+* {{ step }}
+{%- endfor %}
+{% endif %}\
+{# Breaking changes are stated once, ahead of the type sections, so a reader
+   looking for what stopped working does not have to search for them. #}\
+{% set_global breaks = [] %}\
+{% for commit in commits | filter(attribute="breaking", value=true) %}\
+{% set text = commit.message | upper_first %}\
+{% if commit.breaking_description and commit.breaking_description != commit.message %}\
+{% set text = text ~ ". " ~ commit.breaking_description %}\
+{% endif %}\
+{# The short id is bound first: Tera takes no filter inside a `~`
+   concatenation. #}\
+{% set short = commit.id | truncate(length=7, end="") %}\
+{% set_global breaks = breaks | concat(with="* " ~ text ~ " ([`" ~ short ~ "`](" ~ repo ~ "/commit/" ~ commit.id ~ "))") %}\
+{% endfor %}\
+{% if breaks | length > 0 %}
+
+## Breaking changes
+{% for entry in breaks %}
+{{ entry }}
+{%- endfor %}
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+
+## {{ group | striptags | trim }}
+{% for commit in commits %}
+{% set short = commit.id | truncate(length=7, end="") %}\
+* {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | upper_first }} ([`{{ short }}`]({{ repo }}/commit/{{ commit.id }}))
+{%- endfor %}
+{% endfor %}\
+{% if previous.version %}
+
+**Full changelog:** [`{{ previous.version }}...{{ version }}`]({{ repo }}/compare/{{ previous.version }}...{{ version }})
+{% endif %}
+"""
+
+trim = true
+
+footer = ""
+
+[git]
+conventional_commits = true
+# A subject outside the convention is kept under "Other changes" rather than
+# dropped.
+filter_unconventional = false
+filter_commits = false
+split_commits = false
+protect_breaking_commits = true
+
+tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+"
+
+topo_order = false
+sort_commits = "oldest"
+
+# The HTML comment carries the sort key: group_by orders sections by the group
+# string, and the template strips the comment before printing.
+#
+# The set is smaller than the set of commit types: a release note wants four
+# sections, and the type of an entry is legible from its text. Breaking changes
+# and deployment steps are lifted out of these sections by the template.
+commit_parsers = [
+  { message = "^feat", group = "<!-- 00 -->New features" },
+  { message = "^perf", group = "<!-- 00 -->New features" },
+  { message = "^security", group = "<!-- 01 -->Security" },
+  { message = "^fix", group = "<!-- 02 -->Bug fixes" },
+  # Merge commits describe the branch; the commits they carry are listed
+  # individually.
+  { message = "^Merge ", skip = true },
+  { message = ".*", group = "<!-- 03 -->Other changes" },
+]

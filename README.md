@@ -86,7 +86,7 @@ The server writes its logs to `logs/` under the directory it is started from. Lo
 
 ## Development
 
-CI on GitHub Actions checks every push to `main` and every pull request: `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with warnings as errors, a build and `selftest` against a local `serve`. Pushing a tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive and opens a draft release with notes from `tools\release-notes.ps1`. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/); a `Deploy:` trailer lands under "Action required" in the notes.
+CI on GitHub Actions checks every push to `main` and every pull request: `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with warnings as errors, a build and `selftest` against a local `serve`. Pushing an annotated tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive and opens a draft release. Its notes are rendered by [git-cliff](https://git-cliff.org) from `cliff.toml`: the tag's message comes first as the summary, followed by the commits since the previous tag. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/); a `Deploy:` trailer lands under "Action required" in the notes. With git-cliff installed, `git cliff --unreleased` previews the next release's notes.
 
 The same repository check runs before each commit once the hook is enabled in a clone:
 
