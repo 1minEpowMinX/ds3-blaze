@@ -18,9 +18,9 @@
 - The emulator runs on the host's PC (or on any PC in the same VPN). No external VPS is needed.
 - For each client's `NetworkAddress`, the emulator substitutes the address the TCP connection came from (that is, the VPN address) as both the internal and the external one. This guarantees that P2P goes through the VPN, and EA's demangler is not needed.
 - The emulator accepts any Origin token and never asks EA to verify it. The player's name is set by the `--name` and `--player IP=NAME` options.
-- The emulator serves QoS itself (HTTP and UDP echo) in the format from capture #2 ([captures.md](captures.md)), giving its own address. EA's demangler is not redirected: the peers' addresses are VPN addresses anyway, and in game P2P is established without it.
-- The game's UDP port 3659 must be open for inbound traffic on the VPN adapter of both players; `p2p-check` verifies this ([network-checks.md](network-checks.md)).
-- The guest gets into the host's room through quick match (a public room) or through an EA App invite (a private room). Both paths are confirmed in game; details are in the "Second player" section of [protocol.md](protocol.md). The emulator keeps no game lists.
+- The emulator serves QoS itself (HTTP and UDP echo) in the format from capture #2 ([captures.md](../research/captures.md)), giving its own address. EA's demangler is not redirected: the peers' addresses are VPN addresses anyway, and in game P2P is established without it.
+- The game's UDP port 3659 must be open for inbound traffic on the VPN adapter of both players; `p2p-check` verifies this ([network-checks.md](../guides/network-checks.md)).
+- The guest gets into the host's room through quick match (a public room) or through an EA App invite (a private room). Both paths are confirmed in game; details are in the "Second player" section of [protocol.md](../research/protocol.md). The emulator keeps no game lists.
 
 ## Existing work
 
