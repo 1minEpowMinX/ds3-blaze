@@ -4,6 +4,8 @@
 
 The game is still launched through the EA App; the server replaces Blaze only.
 
+![Official co-op fails when one player is behind a strict NAT; with ds3-blaze both players share a VPN, the server runs on the host's PC, and game traffic flows directly between them](docs/images/how-it-works.svg)
+
 ## Status
 
 | Stage | Status |

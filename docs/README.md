@@ -27,6 +27,12 @@ How ds3-blaze answers that research, and in what stages.
 |---|---|
 | [network-checks.md](guides/network-checks.md) | Checking the network between players before launching the game |
 
+## Images
+
+| File | Contents |
+|---|---|
+| [how-it-works.svg](images/how-it-works.svg) | Official co-op compared with ds3-blaze, shown at the top of the README and used for the Nexus gallery |
+
 ## Publishing
 
 | File | Contents |
