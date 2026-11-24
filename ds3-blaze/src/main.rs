@@ -1,0 +1,261 @@
+//! Local Blaze server for Dead Space 3 co-op.
+//!
+//! `serve` runs the SSLv3 redirector, the main Blaze server and the QoS
+//! service; `selftest` plays the client side against a running `serve`;
+//! `proxy` relays the game to EA's servers and logs the traffic; `ea-check`
+//! tests the SSLv3 connection to EA's redirector; `net-check` reports the route
+//! and firewall state for a VPN peer; `p2p-check` adds a UDP exchange between
+//! two players on the game's port.
+
+mod blaze;
+mod components;
+mod fire;
+mod game;
+mod log;
+mod models;
+mod netcheck;
+mod p2pcheck;
+mod proxy;
+mod qos;
+mod redirector;
+mod selftest;
+
+use std::net::{Ipv4Addr, SocketAddr};
+use std::process::ExitCode;
+use std::sync::Arc;
+
+/// Port the game's redirector lookup connects to.
+const REDIRECTOR_PORT: u16 = 42127;
+/// Default port of the main Blaze server handed out in the redirect.
+const DEFAULT_BLAZE_PORT: u16 = 42128;
+/// Default QoS HTTP port; EA's QoS servers use the same one.
+const DEFAULT_QOS_HTTP_PORT: u16 = 17502;
+/// Default QoS UDP probe port; EA's QoS servers use the same one.
+const DEFAULT_QOS_UDP_PORT: u16 = 17499;
+/// Display name used when `--name` is not given.
+const DEFAULT_NAME: &str = "DS3Player";
+
+const USAGE: &str = "\
+usage:
+  ds3-blaze serve [--bind IP] [--advertise IP] [--blaze-port PORT] [--name NAME]
+                  [--player IP=NAME]...
+      --bind        address all listeners bind to (default 127.0.0.1)
+      --advertise   IP the game is told to reach this server at (default 127.0.0.1)
+      --blaze-port  main Blaze server port (default 42128)
+      --name        display name of the player on this machine (default DS3Player)
+      --player      display name of the player connecting from IP; others get
+                    Player-<last octet of their IP>
+  ds3-blaze selftest [--host IP]
+      --host        server to test (default 127.0.0.1)
+  ds3-blaze proxy [--ea-redirector IP:PORT]
+      relays the game to EA's Blaze servers and logs every message
+      --ea-redirector  EA's redirector (default: gosredirector.ea.com's address)
+  ds3-blaze ea-check [--ea-redirector IP:PORT]
+      checks the SSLv3 connection to EA's redirector and main server
+  ds3-blaze net-check --peer IP
+      shows the adapter traffic to IP takes, other VPN adapters, the network
+      profile and the Windows Firewall rules for the game and this server
+  ds3-blaze p2p-check --peer IP [--port PORT] [--seconds N]
+      runs net-check, then exchanges UDP pings with the other player;
+      run it on both PCs at once
+      --peer        the other player's VPN address
+      --port        UDP port (default 3659, the game's P2P port)
+      --seconds     longest run time (default 30)";
+
+struct ServeArgs {
+    bind: Ipv4Addr,
+    advertise: Ipv4Addr,
+    blaze_port: u16,
+    name: String,
+    players: Vec<(Ipv4Addr, String)>,
+}
+
+fn parse_serve(args: &[String]) -> Result<ServeArgs, String> {
+    let mut out = ServeArgs {
+        bind: Ipv4Addr::LOCALHOST,
+        advertise: Ipv4Addr::LOCALHOST,
+        blaze_port: DEFAULT_BLAZE_PORT,
+        name: DEFAULT_NAME.to_string(),
+        players: Vec::new(),
+    };
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || it.next().ok_or_else(|| format!("{arg} needs a value"));
+        match arg.as_str() {
+            "--bind" => out.bind = value()?.parse().map_err(|e| format!("--bind: {e}"))?,
+            "--advertise" => {
+                out.advertise = value()?.parse().map_err(|e| format!("--advertise: {e}"))?
+            }
+            "--blaze-port" => {
+                out.blaze_port = value()?.parse().map_err(|e| format!("--blaze-port: {e}"))?
+            }
+            "--name" => out.name = value()?.clone(),
+            "--player" => {
+                let entry = value()?;
+                let (ip, name) = entry.split_once('=').ok_or("--player takes IP=NAME")?;
+                let ip = ip.parse().map_err(|e| format!("--player {entry}: {e}"))?;
+                if name.trim().is_empty() {
+                    return Err(format!("--player {entry}: empty name"));
+                }
+                out.players.push((ip, name.to_string()));
+            }
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    if out.name.trim().is_empty() {
+        return Err("--name must not be empty".into());
+    }
+    Ok(out)
+}
+
+fn parse_ea_redirector(args: &[String]) -> Result<SocketAddr, String> {
+    match args {
+        [] => Ok(proxy::EA_REDIRECTOR),
+        [flag, addr] if flag == "--ea-redirector" => {
+            addr.parse().map_err(|e| format!("--ea-redirector: {e}"))
+        }
+        _ => Err("only --ea-redirector IP:PORT is accepted".into()),
+    }
+}
+
+async fn run_proxy(ea_redirector: SocketAddr) -> std::io::Result<()> {
+    let path = log::init()?;
+    log!("main", "log file: {}", path.display());
+    log!(
+        "main",
+        "proxy mode: the log holds the account's data from EA, keep it private"
+    );
+    proxy::run(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, REDIRECTOR_PORT)),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, DEFAULT_BLAZE_PORT)),
+        ea_redirector,
+    )
+    .await
+}
+
+struct P2pArgs {
+    peer: Ipv4Addr,
+    port: u16,
+    seconds: u64,
+}
+
+fn parse_p2p_check(args: &[String]) -> Result<P2pArgs, String> {
+    let mut peer = None;
+    let mut out = P2pArgs {
+        peer: Ipv4Addr::UNSPECIFIED,
+        port: p2pcheck::GAME_PORT,
+        seconds: p2pcheck::DEFAULT_SECONDS,
+    };
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || it.next().ok_or_else(|| format!("{arg} needs a value"));
+        match arg.as_str() {
+            "--peer" => peer = Some(value()?.parse().map_err(|e| format!("--peer: {e}"))?),
+            "--port" => out.port = value()?.parse().map_err(|e| format!("--port: {e}"))?,
+            "--seconds" => out.seconds = value()?.parse().map_err(|e| format!("--seconds: {e}"))?,
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    out.peer = peer.ok_or("p2p-check needs --peer IP")?;
+    Ok(out)
+}
+
+fn parse_selftest(args: &[String]) -> Result<Ipv4Addr, String> {
+    match args {
+        [] => Ok(Ipv4Addr::LOCALHOST),
+        [flag, host] if flag == "--host" => host.parse().map_err(|e| format!("--host: {e}")),
+        _ => Err("selftest takes only --host IP".into()),
+    }
+}
+
+async fn serve(args: ServeArgs) -> std::io::Result<()> {
+    let path = log::init()?;
+    log!("main", "log file: {}", path.display());
+    let instance = redirector::Instance {
+        ip: args.advertise,
+        port: args.blaze_port,
+        secure: false,
+    };
+    let qos_ports = qos::Ports {
+        http: DEFAULT_QOS_HTTP_PORT,
+        udp: DEFAULT_QOS_UDP_PORT,
+    };
+    let config = Arc::new(blaze::Config {
+        advertise: args.advertise,
+        qos: models::QosHttp {
+            host: args.advertise,
+            port: qos_ports.http,
+        },
+        player_name: args.name,
+        player_names: args.players,
+        games: Default::default(),
+    });
+    log!(
+        "main",
+        "advertising {} (Blaze port {}), player name \"{}\"",
+        args.advertise,
+        args.blaze_port,
+        config.player_name
+    );
+    tokio::try_join!(
+        redirector::run(SocketAddr::from((args.bind, REDIRECTOR_PORT)), instance),
+        blaze::run(SocketAddr::from((args.bind, args.blaze_port)), config),
+        qos::run(args.bind, args.advertise, qos_ports),
+    )?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let result = match args.split_first() {
+        Some((cmd, rest)) if cmd == "serve" => match parse_serve(rest) {
+            Ok(a) => serve(a).await,
+            Err(e) => return usage_error(&e),
+        },
+        Some((cmd, rest)) if cmd == "selftest" => match parse_selftest(rest) {
+            Ok(host) => {
+                selftest::run(
+                    host,
+                    REDIRECTOR_PORT,
+                    DEFAULT_QOS_HTTP_PORT,
+                    DEFAULT_QOS_UDP_PORT,
+                )
+                .await
+            }
+            Err(e) => return usage_error(&e),
+        },
+        Some((cmd, rest)) if cmd == "proxy" => match parse_ea_redirector(rest) {
+            Ok(addr) => run_proxy(addr).await,
+            Err(e) => return usage_error(&e),
+        },
+        Some((cmd, rest)) if cmd == "ea-check" => match parse_ea_redirector(rest) {
+            Ok(addr) => proxy::check(addr).await,
+            Err(e) => return usage_error(&e),
+        },
+        Some((cmd, rest)) if cmd == "net-check" => match parse_p2p_check(rest) {
+            Ok(a) => netcheck::diagnose(a.peer).and_then(|verdict| match verdict.problems {
+                0 => Ok(()),
+                n => Err(std::io::Error::other(format!("{n} problem(s) found"))),
+            }),
+            Err(e) => return usage_error(&e),
+        },
+        Some((cmd, rest)) if cmd == "p2p-check" => match parse_p2p_check(rest) {
+            Ok(a) => p2pcheck::run(a.peer, a.port, a.seconds).await,
+            Err(e) => return usage_error(&e),
+        },
+        _ => return usage_error("missing command"),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn usage_error(message: &str) -> ExitCode {
+    eprintln!("{message}\n{USAGE}");
+    ExitCode::from(2)
+}

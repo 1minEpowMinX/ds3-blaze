@@ -1,0 +1,24 @@
+[package]
+name = "ds3-blaze"
+version = "0.1.0"
+edition = "2024"
+description = "Local Blaze server for Dead Space 3 co-op over VPN"
+license = "MIT"
+publish = false
+
+[dependencies]
+# SSLv3 with the ProtoSSL bypass certificate (feature "blaze-cert", on by default)
+blaze-ssl-async = "0.4"
+tdf = "0.4"
+bytes = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+futures = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+# Symbols are stripped from the exe; the MSVC linker still writes a .pdb beside
+# it, which tools/package.ps1 leaves out of the archive.
+strip = true
+lto = "thin"
+codegen-units = 1

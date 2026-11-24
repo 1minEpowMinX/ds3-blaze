@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks a commit whose staged files fail tools/check-clean.ps1.
+# Enabled per clone with: git config core.hooksPath .githooks
+exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(git rev-parse --show-toplevel)/tools/check-clean.ps1" -Staged

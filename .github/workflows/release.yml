@@ -1,0 +1,42 @@
+name: Release draft
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  draft:
+    name: Package and draft the release
+    needs: ci
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Release notes need the previous tag and the commits since it.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ds3-blaze
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $archive = ./tools/package.ps1 -Tag $env:GITHUB_REF_NAME | Select-Object -Last 1
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+      - name: Release notes
+        shell: pwsh
+        run: ./tools/release-notes.ps1 -Tag $env:GITHUB_REF_NAME -OutFile dist/notes.md
+      - name: Create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: gh release create $env:GITHUB_REF_NAME --draft --verify-tag --title $env:GITHUB_REF_NAME --notes-file dist/notes.md $env:ARCHIVE "$env:ARCHIVE.sha256"

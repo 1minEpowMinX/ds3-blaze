@@ -1,0 +1,41 @@
+# Server and proxy logs: proxy logs carry EA account data, persona names,
+# friend lists and IP addresses. ds3-blaze writes them to logs/ under the
+# directory it runs from, so the pattern matches at any depth.
+logs/
+*.log
+
+# Network captures and memory dumps hold the same data in raw form.
+*.pcap
+*.pcapng
+*.dmp
+
+# Game files are EA's property and stay out of the repository.
+*.exe
+*.dll
+*.sb
+*.toc
+
+# Keys and certificates.
+*.pem
+*.key
+*.pfx
+*.p12
+*.der
+*.crt
+
+# Reference clones of upstream projects, each a repository of its own
+# (README lists them).
+vendor/
+
+# Build output and release archives.
+target/
+dist/
+
+# Editor and tool state.
+*.bak
+*.swp
+.vscode/
+.idea/
+.claude/settings.local.json
+Thumbs.db
+desktop.ini

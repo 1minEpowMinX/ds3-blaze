@@ -1,0 +1,116 @@
+# Dead Space 3 co-op without EA servers
+
+`ds3-blaze` is a local Blaze server for Dead Space 3 co-op on PC. It stands in for the EA servers that bring players together: the redirector, login, game rooms, matchmaking and QoS. Game traffic flows directly between the players over Radmin VPN (or any other VPN that puts them on one subnet), so the ISP's NAT no longer gets in the way.
+
+The game is still launched through the EA App; the server replaces Blaze only.
+
+## Status
+
+| Stage | Status |
+|---|---|
+| Redirector (SSLv3) | works in game |
+| Online login | works in game |
+| Host's room | works in game: create, play, quit with a save |
+| Second player | works in game through quick match and through an EA App invite |
+
+Protocol analysis, traffic captures and the work plan (in Russian): [docs/](docs/README.md).
+
+## Getting it
+
+Release archives are on the repository's Releases page. Each holds `ds3-blaze.exe`, `scripts\hosts.ps1`, this README and the license; the commands below run from the unpacked folder.
+
+To build from source instead, install stable Rust on Windows (`net-check` reads the network settings through PowerShell) and run `tools\package.ps1`. It builds the release binary and writes the same archive to `dist\`.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\package.ps1
+```
+
+Running `ds3-blaze.exe` without arguments prints its commands and their options.
+
+## Running
+
+Both players join the same Radmin VPN network, and both run the network check at the same time, each with the other PC's VPN address:
+
+```powershell
+.\ds3-blaze.exe p2p-check --peer <other PC's VPN address>
+```
+
+Back up your saves before the first test sessions.
+
+### Host
+
+The server runs on the host's PC.
+
+1. Start the server on all interfaces with your VPN address. `--player` names the guest; without it the guest shows up as `Player-<last octet of the guest's address>`:
+
+   ```powershell
+   .\ds3-blaze.exe serve --bind 0.0.0.0 --advertise <host's VPN address> --name <host's name> --player <guest's VPN address>=<guest's name>
+   ```
+
+2. Point `gosredirector.ea.com` at your own PC from an elevated PowerShell:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\hosts.ps1 -Enable
+   ```
+
+3. Start the game, go online in co-op and create a game. A **public** game takes the guest through quick match; a private one takes invites only, so invite the guest through the EA App from inside it.
+
+If the guest does not get in, the `logs\` folder shows how far the server got. The logs hold friend lists and addresses, so share them only privately.
+
+### Guest
+
+1. Point `gosredirector.ea.com` at the host from an elevated PowerShell:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\hosts.ps1 -Enable -Address <host's VPN address>
+   ```
+
+2. Optionally, test the whole path to the host's server without the game:
+
+   ```powershell
+   .\ds3-blaze.exe selftest --host <host's VPN address>
+   ```
+
+3. Start the game and go online in co-op. Then either:
+
+   - pick quick match to join the host's public game. The server puts you into it as soon as it exists, retrying for as long as the game's search lasts, so you may start searching a little before the host's game is up;
+   - or accept the host's invite in the EA App. The server knows players by the addresses they connect from, not by EA account, so it matches the invite to the host only while the two of you are the only players on it.
+
+### Afterwards
+
+Both players run `hosts.ps1 -Disable` to go back to the EA servers.
+
+## Logs and privacy
+
+The server writes its logs to `logs/` under the directory it is started from. Logs of the `proxy` command contain EA account data, the persona name, the friend list and IP addresses. Do not publish them. `.gitignore` keeps logs, traffic captures, memory dumps and game files out of the repository.
+
+## Development
+
+CI on GitHub Actions checks every push to `main` and every pull request: `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with warnings as errors, a build and `selftest` against a local `serve`. Pushing a tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive and opens a draft release with notes from `tools\release-notes.ps1`. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/); a `Deploy:` trailer lands under "Action required" in the notes.
+
+The same repository check runs before each commit once the hook is enabled in a clone:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+Personal values that must never be committed, such as an EA persona name or a home IP address, go one per line into `.git\info\sensitive.txt`. The check searches staged files for them; the file itself stays inside `.git`.
+
+## Credits
+
+- [Pocket Relay](https://github.com/PocketRelay) (Jacobtread, MIT): Blaze component ids and message field layouts, adapted to Dead Space 3. The headers of `components.rs`, `models.rs` and `game.rs` cite the sources.
+- [blaze-ssl-async](https://github.com/jacobtread/blaze-ssl-async) and [tdf](https://crates.io/crates/tdf) (Jacobtread, MIT): SSLv3 and the TDF format, used as dependencies.
+- [Aim4kill/BlazeSDK](https://github.com/Aim4kill/BlazeSDK): Blaze 3 command and notification definitions.
+
+Reference copies of the upstream projects go into `vendor/`, which is not tracked:
+
+```powershell
+git clone https://github.com/PocketRelay/Server vendor/pocket-relay-server
+git clone https://github.com/PocketRelay/Client vendor/pocket-relay-client
+git clone https://github.com/PocketRelay/PocketRelayClientShared vendor/pocket-relay-client-shared
+git clone https://github.com/jacobtread/blaze-ssl-async vendor/blaze-ssl-async
+```
+
+## License
+
+[MIT](LICENSE). Dead Space 3 and Blaze belong to Electronic Arts. This project is not affiliated with EA and contains no game files.
