@@ -17,6 +17,11 @@ pub const OPT_JUMBO_FRAME: u8 = 0x1;
 const HEADER_SIZE: usize = 12;
 const JUMBO_SIZE: usize = 2;
 
+/// Largest frame body the decoder accepts, in bytes.
+// Frames from the game and from EA's server stay within a few kilobytes. The cap
+// stops a 32-bit jumbo length from making the decoder buffer up to 4 GiB.
+pub const MAX_FRAME_LEN: usize = 1 << 20;
+
 /// Frame direction and kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameType {
@@ -227,6 +232,12 @@ impl Decoder for FireCodec {
             *length |= (src.get_u16() as usize) << 16;
             *jumbo = false;
         }
+        if *length > MAX_FRAME_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("frame body of {length} bytes exceeds {MAX_FRAME_LEN}"),
+            ));
+        }
         if src.len() < *length {
             return Ok(None);
         }
@@ -259,5 +270,68 @@ impl Encoder<Frame> for FireCodec {
         }
         dst.extend_from_slice(&frame.contents);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(len: usize) -> Frame {
+        Frame {
+            header: FrameHeader {
+                component: 9,
+                command: 2,
+                error: 0,
+                ty: FrameType::Request,
+                options: 0,
+                seq: 1,
+            },
+            contents: Bytes::from(vec![0xab; len]),
+        }
+    }
+
+    fn encoded(frame: Frame) -> BytesMut {
+        let mut buf = BytesMut::new();
+        FireCodec::default()
+            .encode(frame, &mut buf)
+            .expect("encode");
+        buf
+    }
+
+    #[test]
+    fn jumbo_frame_within_the_limit_round_trips() {
+        let mut buf = encoded(frame(70_000));
+        let decoded = FireCodec::default().decode(&mut buf).expect("decode");
+        assert_eq!(decoded.expect("frame").contents.len(), 70_000);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn partial_frame_waits_for_the_rest() {
+        let mut whole = encoded(frame(100));
+        let mut buf = whole.split_to(HEADER_SIZE + 50);
+        let mut codec = FireCodec::default();
+        assert!(codec.decode(&mut buf).expect("decode").is_none());
+        buf.extend_from_slice(&whole);
+        assert_eq!(
+            codec
+                .decode(&mut buf)
+                .expect("decode")
+                .expect("frame")
+                .contents
+                .len(),
+            100
+        );
+    }
+
+    #[test]
+    fn header_announcing_an_oversized_body_is_refused() {
+        // Only the header arrives: the length alone decides, before any body is buffered.
+        let mut buf = encoded(frame(MAX_FRAME_LEN + 1)).split_to(HEADER_SIZE + JUMBO_SIZE);
+        let Err(err) = FireCodec::default().decode(&mut buf) else {
+            panic!("oversized frame accepted");
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 }
