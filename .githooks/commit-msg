@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks a commit whose message or branch breaks tools/check-commits.ps1.
+# Enabled per clone with: git config core.hooksPath .githooks
+exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(git rev-parse --show-toplevel)/tools/check-commits.ps1" -MessageFile "$1" -Branch "$(git branch --show-current)"

@@ -1,15 +1,61 @@
 name: CI
 
+# Work happens on <type>/<name> branches merged into main, so every branch push
+# is checked, not only main.
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
+    branches: [main]
   workflow_call:
 
 permissions:
   contents: read
 
+# A newer push to the same branch supersedes a running check; runs on main and
+# on release tags always finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref_type != 'tag' }}
+
 jobs:
+  naming:
+    name: Branch and commit names
+    # A release tag carries commits main has already checked.
+    if: github.ref_type != 'tag'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The range check needs main's history next to the branch's.
+          fetch-depth: 0
+      - name: Check names
+        shell: pwsh
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # A pull request is checked from its base; a branch push from main; a
+          # push to main from the previous tip, or only its last commit when
+          # the push created the branch.
+          if ($env:EVENT -eq 'pull_request') {
+            $branch = $env:HEAD_REF
+            $range = "origin/$($env:BASE_REF)..HEAD"
+          } elseif ($env:REF_NAME -ne 'main') {
+            $branch = $env:REF_NAME
+            $range = 'origin/main..HEAD'
+          } elseif ($env:BEFORE -match '^0+$') {
+            $branch = 'main'
+            $range = 'HEAD~1..HEAD'
+          } else {
+            $branch = 'main'
+            $range = "$($env:BEFORE)..HEAD"
+          }
+          ./tools/check-commits.ps1 -Range $range -Branch $branch
+
   hygiene:
     name: Repository hygiene
     runs-on: windows-latest
