@@ -337,6 +337,16 @@ pub struct Games {
     accounts: HashMap<u64, u32>,
 }
 
+/// One player's entry into one game, as [`Games::join`] made it.
+#[derive(Clone, Copy)]
+pub struct JoinTicket {
+    pub game_id: u32,
+    pub player_id: u32,
+    /// Join time of the membership (`GamePlayer::joined`); a later join of the
+    /// same player to the same game carries a different one.
+    joined: u64,
+}
+
 /// A logged-in player that `lookupUsers` names.
 pub struct FoundUser {
     pub player_id: u32,
@@ -570,12 +580,15 @@ impl Games {
             .min()
     }
 
-    /// Adds player `player_id` to game `id` in slot type `slot_type` and queues
-    /// the notifications that introduce it, or returns a GameManager error code.
+    /// Adds player `player_id` to game `id` in slot type `slot_type`, queues the
+    /// notifications that introduce it and returns the ticket of the new
+    /// membership, or returns a GameManager error code.
     ///
     /// Existing members receive the newcomer's `UserAdded` and `UserUpdated` and
     /// then `PlayerJoining`; the newcomer receives the same pair for each existing
-    /// member, then `GameSetup` with `reason`, then its session update.
+    /// member, then `GameSetup` with `reason`, then its session update. The
+    /// newcomer stays `ACTIVE_CONNECTING` until [`Games::update_mesh`] completes
+    /// the join or [`Games::expire_join`] removes it.
     pub fn join(
         &mut self,
         id: u32,
@@ -583,7 +596,7 @@ impl Games {
         slot_type: u8,
         reason: SetupReason,
         out: &mut Outbox,
-    ) -> Result<(), u16> {
+    ) -> Result<JoinTicket, u16> {
         let Some(user) = self.users.get(&player_id) else {
             return Err(ERR_PLAYER_NOT_FOUND);
         };
@@ -640,6 +653,11 @@ impl Games {
         };
         game.notify_all(out, gm::PLAYER_JOINING, joining);
         let tx = newcomer.tx.clone();
+        let ticket = JoinTicket {
+            game_id: id,
+            player_id,
+            joined: newcomer.joined,
+        };
         game.players.push(newcomer);
         let setup = GameSetup {
             game,
@@ -648,7 +666,24 @@ impl Games {
         };
         out.push(&tx, Frame::notify(gm::COMPONENT, gm::GAME_SETUP, setup));
         self.queue_session_update(player_id, out);
-        Ok(())
+        Ok(ticket)
+    }
+
+    /// Removes the member `ticket` names with reason `PLAYER_JOIN_TIMEOUT` when
+    /// that membership is still `ACTIVE_CONNECTING`, and returns whether it did.
+    pub fn expire_join(&mut self, ticket: &JoinTicket, out: &mut Outbox) -> bool {
+        let pending = self
+            .games
+            .get(&ticket.game_id)
+            .and_then(|game| game.member(ticket.player_id))
+            .is_some_and(|m| m.joined == ticket.joined && m.state == PLAYER_ACTIVE_CONNECTING);
+        pending
+            && self.remove_player(
+                ticket.game_id,
+                ticket.player_id,
+                REMOVE_REASON_JOIN_TIMEOUT,
+                out,
+            )
     }
 
     /// Returns a new matchmaking session id.
@@ -1179,6 +1214,78 @@ mod tests {
         let id = player.id;
         games.log_in(player, NetData::default(), unbounded_channel().0);
         id
+    }
+
+    /// Returns a two-slot game request with game protocol version `version`.
+    fn request(version: &str) -> CreateGameRequest {
+        CreateGameRequest {
+            attributes: Vec::new(),
+            name: "room".into(),
+            settings: SETTING_OPEN_TO_MATCHMAKING,
+            game_type: String::new(),
+            topology: 0,
+            capacity: vec![2, 0],
+            max_players: 2,
+            presence: 0,
+            voip: 0,
+            version: version.into(),
+        }
+    }
+
+    /// Logs in a host and a guest, creates the host's game in `PRE_GAME` and
+    /// joins the guest to it; returns the games, the guest's ticket and the host's id.
+    fn host_and_guest() -> (Games, JoinTicket, u32) {
+        let mut games = Games::default();
+        let host = log_in(&mut games, "host");
+        let guest = log_in(&mut games, "guest");
+        let mut out = Outbox::default();
+        let id = games.create(request("v1"), host, &mut out).unwrap();
+        games.advance_state(id, STATE_PRE_GAME, &mut out);
+        let ticket = games
+            .join(
+                id,
+                guest,
+                SLOT_PUBLIC_PARTICIPANT,
+                SetupReason::Join,
+                &mut out,
+            )
+            .unwrap();
+        (games, ticket, host)
+    }
+
+    /// Returns the GameManager command ids `out` holds, in order.
+    fn commands(out: &Outbox) -> Vec<u16> {
+        out.0
+            .iter()
+            .filter(|(_, f)| f.header.component == gm::COMPONENT)
+            .map(|(_, f)| f.header.command)
+            .collect()
+    }
+
+    #[test]
+    fn join_still_connecting_expires() {
+        let (mut games, ticket, _) = host_and_guest();
+        let mut out = Outbox::default();
+        assert!(games.expire_join(&ticket, &mut out));
+        assert!(games.games_of(ticket.player_id).is_empty());
+        assert!(games.contains(ticket.game_id));
+        assert_eq!(commands(&out), [gm::PLAYER_REMOVED, gm::PLAYER_REMOVED]);
+        let removed = &out.0[0].1.contents;
+        let reason: u8 = TdfDeserializer::new(removed).tag(b"REAS").unwrap();
+        assert_eq!(reason, REMOVE_REASON_JOIN_TIMEOUT);
+    }
+
+    #[test]
+    fn completed_join_does_not_expire() {
+        let (mut games, ticket, host) = host_and_guest();
+        let mut out = Outbox::default();
+        let link = MeshLink {
+            player_id: ticket.player_id,
+            status: LINK_CONNECTED,
+        };
+        games.update_mesh(ticket.game_id, host, &[link], &mut out);
+        assert!(!games.expire_join(&ticket, &mut out));
+        assert_eq!(games.games_of(ticket.player_id), [ticket.game_id]);
     }
 
     fn by_account(account_id: u64) -> UserIdentification {

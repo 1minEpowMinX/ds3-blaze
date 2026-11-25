@@ -526,11 +526,12 @@ impl Session {
                     );
                     drop(games);
                     match joined {
-                        Ok(()) => {
+                        Ok(ticket) => {
                             log!(
                                 &self.tag,
                                 "joinGame: joined game {game_id} (requested {requested}, user {target_user:?})"
                             );
+                            watch_join(self.config.clone(), self.tag.clone(), ticket);
                             Frame::response(h, game::JoinGameResponse { game_id })
                         }
                         Err(code) => {
@@ -716,8 +717,8 @@ impl Session {
         let mut games = lock_games(&self.config);
         let session_id = games.next_matchmaking_id();
         let reason = game::SetupReason::Matchmaking { session_id };
-        if let Some(game_id) = games.find_match(player_id)
-            && games
+        if let Some(ticket) = games.find_match(player_id).and_then(|game_id| {
+            games
                 .join(
                     game_id,
                     player_id,
@@ -725,12 +726,14 @@ impl Session {
                     reason,
                     &mut self.outbox,
                 )
-                .is_ok()
-        {
+                .ok()
+        }) {
             log!(
                 &self.tag,
-                "startMatchmaking: session {session_id} joined game {game_id}"
+                "startMatchmaking: session {session_id} joined game {}",
+                ticket.game_id
             );
+            watch_join(self.config.clone(), self.tag.clone(), ticket);
             return Frame::response(request, game::StartMatchmakingResponse { session_id });
         }
         drop(games);
@@ -751,7 +754,7 @@ impl Session {
                 .await;
                 let mut out = Outbox::default();
                 let mut games = lock_games(&config);
-                let joined = games.find_match(player_id).filter(|&game_id| {
+                let joined = games.find_match(player_id).and_then(|game_id| {
                     games
                         .join(
                             game_id,
@@ -760,15 +763,17 @@ impl Session {
                             reason,
                             &mut out,
                         )
-                        .is_ok()
+                        .ok()
                 });
                 drop(games);
                 out.flush();
-                if let Some(game_id) = joined {
+                if let Some(ticket) = joined {
                     log!(
                         &tag,
-                        "matchmaking session {session_id} joined game {game_id}"
+                        "matchmaking session {session_id} joined game {}",
+                        ticket.game_id
                     );
+                    watch_join(config, tag, ticket);
                     return;
                 }
             }
@@ -800,6 +805,32 @@ fn lock_games(config: &Config) -> MutexGuard<'_, Games> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
+
+/// Removes the member `ticket` names with reason `PLAYER_JOIN_TIMEOUT` once
+/// [`JOIN_TIMEOUT`] has passed, unless its join has completed by then.
+fn watch_join(config: Arc<Config>, tag: String, ticket: game::JoinTicket) {
+    tokio::spawn(async move {
+        tokio::time::sleep(JOIN_TIMEOUT).await;
+        let mut out = Outbox::default();
+        let expired = lock_games(&config).expire_join(&ticket, &mut out);
+        out.flush();
+        if expired {
+            log!(
+                &tag,
+                "player {} removed from game {}: no mesh connection within {} s",
+                ticket.player_id,
+                ticket.game_id,
+                JOIN_TIMEOUT.as_secs()
+            );
+        }
+    });
+}
+
+/// Time a new member has to report a connected mesh link before it is removed.
+///
+/// In two-PC runs the link comes up within a second of the join; a member still
+/// connecting after this long holds a slot that a working player cannot take.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// UserSessions error code `USER_ERR_USER_NOT_FOUND`.
 const USER_ERR_USER_NOT_FOUND: u16 = 1;
