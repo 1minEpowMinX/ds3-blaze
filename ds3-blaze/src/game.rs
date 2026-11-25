@@ -1311,6 +1311,147 @@ mod tests {
         assert_eq!(games.games_of(ticket.player_id), [ticket.game_id]);
     }
 
+    /// Returns the component and command of each frame `out` holds for player
+    /// `player_id`'s connection, in order.
+    fn received(games: &Games, out: &Outbox, player_id: u32) -> Vec<(u16, u16)> {
+        let tx = &games.users[&player_id].tx;
+        out.0
+            .iter()
+            .filter(|(to, _)| to.same_channel(tx))
+            .map(|(_, f)| (f.header.component, f.header.command))
+            .collect()
+    }
+
+    #[test]
+    fn create_sends_game_setup_then_session_update() {
+        let mut games = Games::default();
+        let host = log_in(&mut games, "host");
+        let mut out = Outbox::default();
+        games.create(request("v1"), host, &mut out).unwrap();
+        assert_eq!(
+            received(&games, &out, host),
+            [
+                (gm::COMPONENT, gm::GAME_SETUP),
+                (us::COMPONENT, us::USER_SESSION_EXTENDED_DATA_UPDATE),
+            ]
+        );
+    }
+
+    #[test]
+    fn join_introduces_both_sides_in_order() {
+        let mut games = Games::default();
+        let host = log_in(&mut games, "host");
+        let guest = log_in(&mut games, "guest");
+        let mut setup = Outbox::default();
+        let id = games.create(request("v1"), host, &mut setup).unwrap();
+        let mut out = Outbox::default();
+        games
+            .join(
+                id,
+                guest,
+                SLOT_PUBLIC_PARTICIPANT,
+                SetupReason::Join,
+                &mut out,
+            )
+            .unwrap();
+        assert_eq!(
+            received(&games, &out, host),
+            [
+                (us::COMPONENT, us::USER_ADDED),
+                (us::COMPONENT, us::USER_UPDATED),
+                (gm::COMPONENT, gm::PLAYER_JOINING),
+            ]
+        );
+        assert_eq!(
+            received(&games, &out, guest),
+            [
+                (us::COMPONENT, us::USER_ADDED),
+                (us::COMPONENT, us::USER_UPDATED),
+                (gm::COMPONENT, gm::GAME_SETUP),
+                (us::COMPONENT, us::USER_SESSION_EXTENDED_DATA_UPDATE),
+            ]
+        );
+    }
+
+    #[test]
+    fn host_leaving_removes_the_game_for_the_guest() {
+        let (mut games, ticket, host) = host_and_guest();
+        let mut out = Outbox::default();
+        assert!(games.remove_player(ticket.game_id, host, 6, &mut out));
+        assert!(!games.contains(ticket.game_id));
+        assert_eq!(
+            received(&games, &out, ticket.player_id),
+            [
+                (gm::COMPONENT, gm::PLAYER_REMOVED),
+                (gm::COMPONENT, gm::GAME_REMOVED),
+                (us::COMPONENT, us::USER_SESSION_EXTENDED_DATA_UPDATE),
+            ]
+        );
+        let (_, removed) = out
+            .0
+            .iter()
+            .find(|(_, f)| f.header.command == gm::GAME_REMOVED)
+            .unwrap();
+        let reason: u8 = TdfDeserializer::new(&removed.contents)
+            .tag(b"REAS")
+            .unwrap();
+        assert_eq!(reason, DESTROY_REASON_HOST_LEAVING);
+    }
+
+    #[test]
+    fn game_setup_carries_ids_and_eas_version_hash() {
+        let mut games = Games::default();
+        let host = log_in(&mut games, "host");
+        let mut out = Outbox::default();
+        let (version, hash) = KNOWN_VERSION_HASHES[0];
+        let id = games.create(request(version), host, &mut out).unwrap();
+        let setup = &out.0[0].1.contents;
+        let field = |tag: &'static [u8]| {
+            TdfDeserializer::new(setup)
+                .group(b"GAME", |r| r.tag::<u64>(tag))
+                .unwrap()
+        };
+        assert_eq!(field(b"GPVH"), hash);
+        assert_eq!(field(b"GSID"), u64::from(id));
+        let gid: u32 = TdfDeserializer::new(setup)
+            .group(b"GAME", |r| r.tag(b"GID"))
+            .unwrap();
+        // Fields after `HNET` are out of reach: the tdf crate cannot skip the
+        // union elements of that list, which the game itself reads.
+        let admins: Vec<u32> = TdfDeserializer::new(setup)
+            .group(b"GAME", |r| r.tag(b"ADMN"))
+            .unwrap();
+        assert_eq!((gid, admins), (id, vec![host]));
+    }
+
+    #[test]
+    fn attributes_stay_in_case_insensitive_order() {
+        let mut attributes = vec![
+            ("restorePointNumber".to_string(), "1".to_string()),
+            ("GAME_CHECKPOINT".to_string(), "a".to_string()),
+            ("chapterNumber".to_string(), "2".to_string()),
+        ];
+        sort_attributes(&mut attributes);
+        merge_attributes(
+            &mut attributes,
+            &[
+                ("ChapterNumber".to_string(), "3".to_string()),
+                ("MAP_DISPLAY_NAME".to_string(), "m".to_string()),
+            ],
+        );
+        let keys: Vec<&str> = attributes.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "chapterNumber",
+                "GAME_CHECKPOINT",
+                "MAP_DISPLAY_NAME",
+                "restorePointNumber"
+            ]
+        );
+        assert_eq!(attributes[0].1, "3");
+    }
+
     #[test]
     fn mesh_report_from_outside_the_game_is_ignored() {
         let (mut games, ticket, host) = host_and_guest();
