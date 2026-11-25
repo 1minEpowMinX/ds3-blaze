@@ -1,8 +1,8 @@
 name: Release draft
 
 # A tag v<version> matching ds3-blaze/Cargo.toml produces a draft release: the
-# archive from tools/package.ps1 and notes rendered from cliff.toml, which open
-# with the tag's annotation.
+# archive from tools/package.ps1 with a signed build provenance attestation, and
+# notes rendered from cliff.toml, which open with the tag's annotation.
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
@@ -19,6 +19,10 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+      # id-token mints the OIDC token Sigstore signs the attestation with;
+      # attestations stores it on the repository.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -39,6 +43,15 @@ jobs:
       - name: Build the archive
         shell: pwsh
         run: ./tools/package.ps1 -Tag $env:GITHUB_REF_NAME
+      # SLSA build provenance for the archive and for the executable inside it,
+      # so `gh attestation verify` accepts either one. It runs before the draft
+      # exists, so a failed signature leaves no release behind.
+      - name: Attest the build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/*.zip
+            ds3-blaze/target/release/ds3-blaze.exe
       - name: Render the notes
         id: cliff
         uses: orhun/git-cliff-action@v4
