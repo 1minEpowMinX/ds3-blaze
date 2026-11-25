@@ -10,9 +10,10 @@ earlier versions wrote them, and leaves the rest of the file untouched. The file
 keeps its encoding (a byte order mark if it had one, the ANSI code page
 otherwise) and its line endings.
 
-Before changing the file the script copies it to hosts.ds3-blaze.bak next to it,
-so the backup holds the file as it was before the latest run. Needs an elevated
-PowerShell. Flushes the DNS cache afterwards.
+Before changing the file the script writes hosts.ds3-blaze.bak next to it: the
+file as it was before the latest run, minus every ds3-blaze entry, so restoring
+it never brings the redirect back. Needs an elevated PowerShell. Flushes the DNS
+cache afterwards.
 
 .PARAMETER Enable
 Adds the section, replacing any earlier ds3-blaze entries.
@@ -93,18 +94,30 @@ foreach ($line in $lines) {
 if ($inSection) {
     Write-Error "$Path has '$BeginLine' without '$EndLine'; remove the ds3-blaze lines by hand, then run the script again."
 }
+
+# Returns $Lines joined with the file's line break, with a final one when
+# $Trailing is set and there is any line.
+function Join-HostsLines([string[]]$Lines, [bool]$Trailing) {
+    $joined = $Lines -join $newline
+    if ($Lines.Count -gt 0 -and $Trailing) { $joined += $newline }
+    $joined
+}
+
+# The backup is taken from the file without ds3-blaze entries: a copy taken
+# while an entry is present would restore the redirect, which -Disable cannot
+# remove from the backup.
+$clean = Join-HostsLines $kept.ToArray() $endsWithNewline
 if ($Enable) {
     $kept.Add($BeginLine)
     $Hosts | ForEach-Object { $kept.Add("$Address $_") }
     $kept.Add($EndLine)
 }
 $lines = $kept.ToArray()
-$updated = $lines -join $newline
-if ($lines.Count -gt 0 -and ($endsWithNewline -or $Enable)) { $updated += $newline }
+$updated = Join-HostsLines $lines ($endsWithNewline -or $Enable)
 
-Copy-Item -LiteralPath $Path -Destination $Backup -Force
+[IO.File]::WriteAllText($Backup, $clean, $encoding)
 [IO.File]::WriteAllText($Path, $updated, $encoding)
-Write-Host "previous hosts file saved as $Backup"
+Write-Host "previous hosts file without ds3-blaze entries saved as $Backup"
 
 ipconfig /flushdns | Out-Null
 if ($LASTEXITCODE -ne 0) {
