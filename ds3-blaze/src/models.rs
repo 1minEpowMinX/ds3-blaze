@@ -4,6 +4,7 @@
 //! (`src/session/models`, MIT, Jacobtread), adapted to Dead Space 3.
 
 use std::net::Ipv4Addr;
+use std::time::Duration;
 use tdf::prelude::{
     DecodeResult, GroupSlice, ObjectId, TaggedUnion, TdfDeserializeOwned, TdfDeserializer,
     TdfSerialize, TdfSerializer, TdfType, TdfTyped,
@@ -18,7 +19,7 @@ pub const AUTH_SOURCE: &str = "303107";
 /// Ping site alias the QoS configuration and session data refer to.
 pub const PING_SITE: &str = "ea-sjc";
 /// Ping period announced in `preAuth`; the client sends `ping` at this rate.
-pub const PING_PERIOD: &str = "15s";
+pub const PING_PERIOD: Duration = Duration::from_secs(15);
 
 /// Client platform value for PC, as the client reports it in `CINF.CPFT`.
 const PLATFORM_PC: u8 = 4;
@@ -85,11 +86,12 @@ impl TdfSerialize for PreAuthResponse {
         w.tag_str(b"ASRC", AUTH_SOURCE);
         w.tag_list_slice(b"CIDS", COMPONENT_IDS);
         w.tag_str_empty(b"CNGN");
+        let ping_period = format!("{}s", PING_PERIOD.as_secs());
         w.group(b"CONF", |w| {
             w.tag_map_tuples(
                 b"CONF",
                 &[
-                    ("pingPeriod", PING_PERIOD),
+                    ("pingPeriod", ping_period.as_str()),
                     ("voipHeadsetUpdateRate", "1000"),
                     ("xlspConnectionIdleTimeout", "300"),
                 ],

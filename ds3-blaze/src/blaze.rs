@@ -18,7 +18,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tdf::prelude::{TdfDeserializeOwned, TdfDeserializer, TdfSerialize};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_util::codec::Framed;
@@ -110,6 +111,8 @@ struct Session {
     outbox: Outbox,
     /// Running matchmaking session: its id and the timer that ends it.
     matchmaking: Option<(u32, AbortHandle)>,
+    /// Extra silence the next wait for a message allows, granted by `suspendUserPing`.
+    ping_grace: Duration,
 }
 
 impl Drop for Session {
@@ -121,10 +124,15 @@ impl Drop for Session {
     }
 }
 
-async fn serve_session(tcp: TcpStream, peer: SocketAddr, id: u32, config: Arc<Config>) {
+/// Serves one client connection over `io` until the client closes it, a read
+/// fails or the client stays silent longer than [`IDLE_TIMEOUT`].
+async fn serve_session<S>(io: S, peer: SocketAddr, id: u32, config: Arc<Config>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let tag = format!("blaze#{id}");
     log!(&tag, "{peer}: connected");
-    let (mut sink, mut stream) = Framed::new(tcp, FireCodec::default()).split();
+    let (mut sink, mut stream) = Framed::new(io, FireCodec::default()).split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Frame>();
 
     let writer_tag = tag.clone();
@@ -149,9 +157,18 @@ async fn serve_session(tcp: TcpStream, peer: SocketAddr, id: u32, config: Arc<Co
         settings: Vec::new(),
         outbox: Outbox::default(),
         matchmaking: None,
+        ping_grace: Duration::ZERO,
     };
+    let mut idle = false;
     loop {
-        match stream.next().await {
+        // A grace period covers only the wait that follows the request granting it.
+        let wait = IDLE_TIMEOUT + std::mem::take(&mut session.ping_grace);
+        let Ok(next) = tokio::time::timeout(wait, stream.next()).await else {
+            log!(&tag, "no message for {}s, closing", wait.as_secs());
+            idle = true;
+            break;
+        };
+        match next {
             Some(Ok(frame)) => {
                 log!(&tag, "<- {frame}");
                 if frame.header.ty == FrameType::Request {
@@ -174,6 +191,11 @@ async fn serve_session(tcp: TcpStream, peer: SocketAddr, id: u32, config: Arc<Co
         }
     }
     drop(session);
+    // A peer that vanished stops acknowledging data, so the writer can stay
+    // blocked on a full send buffer.
+    if idle {
+        writer.abort();
+    }
     let _ = writer.await;
 }
 
@@ -220,6 +242,17 @@ impl Session {
                         server_time: now.unwrap_or(0),
                     },
                 )
+            }
+            (util::COMPONENT, util::SUSPEND_USER_PING) => {
+                let micros = read(frame, |r| r.tag::<u32>(b"TVAL")).unwrap_or(0);
+                self.ping_grace = Duration::from_micros(u64::from(micros));
+                log!(
+                    &self.tag,
+                    "suspendUserPing: the next silence may last {}s longer",
+                    self.ping_grace.as_secs()
+                );
+                // BlazeSDK reads this error code as the grant.
+                Frame::error(h, UTIL_ERR_PING_SUSPENDED)
             }
             (util::COMPONENT, util::FETCH_CLIENT_CONFIG) => {
                 let id = read(frame, |r| r.tag::<String>(b"CFID")).unwrap_or_default();
@@ -907,6 +940,16 @@ fn watch_join(config: Arc<Config>, tag: String, ticket: game::JoinTicket) {
 /// connecting after this long holds a slot that a working player cannot take.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Silence after which a session is closed and its player removed from games:
+/// four ping periods.
+// A dropped VPN link leaves the TCP connection open without either side
+// noticing; only this timeout ends such a session. Four missed pings is the
+// multiple Pocket Relay uses.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(4 * models::PING_PERIOD.as_secs());
+
+/// Util error code `UTIL_PING_SUSPENDED`.
+const UTIL_ERR_PING_SUSPENDED: u16 = 0x12e;
+
 /// UserSessions error code `USER_ERR_USER_NOT_FOUND`.
 const USER_ERR_USER_NOT_FOUND: u16 = 1;
 
@@ -960,5 +1003,95 @@ mod tests {
     #[test]
     fn without_only_listed_every_address_is_admitted() {
         assert!(config(false).admits(Ipv4Addr::new(26, 0, 0, 3)));
+    }
+
+    /// `suspendUserPing` body.
+    struct SuspendUserPing(u32);
+
+    impl TdfSerialize for SuspendUserPing {
+        fn serialize<S: tdf::prelude::TdfSerializer>(&self, w: &mut S) {
+            w.tag_u32(b"TVAL", self.0);
+        }
+    }
+
+    /// Client end of a session served over an in-memory pipe.
+    struct Client {
+        framed: Framed<tokio::io::DuplexStream, FireCodec>,
+        seq: u16,
+    }
+
+    impl Client {
+        fn connect() -> Client {
+            let (client, server) = tokio::io::duplex(64 * 1024);
+            let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 1));
+            tokio::spawn(serve_session(server, peer, 1, Arc::new(config(false))));
+            Client {
+                framed: Framed::new(client, FireCodec::default()),
+                seq: 0,
+            }
+        }
+
+        /// Sends a request and returns the server's reply.
+        async fn request<V: TdfSerialize>(&mut self, command: u16, value: V) -> Frame {
+            self.seq += 1;
+            let frame = Frame::request(self.seq, util::COMPONENT, command, value);
+            self.framed.send(frame).await.expect("send");
+            self.framed.next().await.expect("reply").expect("frame")
+        }
+
+        /// Waits for the server to close the connection.
+        async fn closed(&mut self) {
+            assert!(
+                self.framed.next().await.is_none(),
+                "expected the server to close"
+            );
+        }
+    }
+
+    /// Empty request body.
+    struct Empty;
+
+    impl TdfSerialize for Empty {
+        fn serialize<S: tdf::prelude::TdfSerializer>(&self, _: &mut S) {}
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn silent_client_is_closed_after_idle_timeout() {
+        let start = tokio::time::Instant::now();
+        let mut client = Client::connect();
+        client.closed().await;
+        assert_eq!(start.elapsed(), IDLE_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pinging_client_stays_connected() {
+        let mut client = Client::connect();
+        for _ in 0..8 {
+            tokio::time::sleep(models::PING_PERIOD).await;
+            let reply = client.request(util::PING, Empty).await;
+            assert_eq!(reply.header.ty, FrameType::Response);
+        }
+        let silent = tokio::time::Instant::now();
+        client.closed().await;
+        assert_eq!(silent.elapsed(), IDLE_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn suspended_ping_extends_only_the_next_wait() {
+        let mut client = Client::connect();
+        let grace = Duration::from_secs(90);
+        let reply = client
+            .request(
+                util::SUSPEND_USER_PING,
+                SuspendUserPing(grace.as_micros() as u32),
+            )
+            .await;
+        assert_eq!(reply.header.error, UTIL_ERR_PING_SUSPENDED);
+
+        tokio::time::sleep(IDLE_TIMEOUT + grace - Duration::from_secs(1)).await;
+        client.request(util::PING, Empty).await;
+        let silent = tokio::time::Instant::now();
+        client.closed().await;
+        assert_eq!(silent.elapsed(), IDLE_TIMEOUT);
     }
 }
