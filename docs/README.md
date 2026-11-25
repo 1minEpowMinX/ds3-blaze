@@ -20,6 +20,7 @@ How ds3-blaze answers that research, and in what stages.
 |---|---|
 | [architecture.md](design/architecture.md) | Layout with the emulator and a VPN, existing work, sources |
 | [plan.md](design/plan.md) | Work stages and their status, risks and open questions |
+| [gui.md](design/gui.md) | The players' window, the workspace split and the command line that serves tests |
 
 ## Guides
 

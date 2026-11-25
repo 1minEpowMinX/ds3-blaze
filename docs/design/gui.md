@@ -1,0 +1,189 @@
+# GUI and workspace split
+
+Design agreed on 2026-11-26. It turns the test-era command line into a window that an ordinary player can follow, and splits the crate so that the window and the command line share one core.
+
+## Goal
+
+A player today has to find their own VPN address, type the other player's address into `--player`, run `hosts.ps1` from an elevated PowerShell, run `p2p-check` at the same moment as the other player, and remember `hosts.ps1 -Disable` afterwards. The GUI removes each of these steps or does it for the player. The command line stays for tests and troubleshooting.
+
+## Workspace
+
+`ds3-blaze/` becomes a Cargo workspace:
+
+| Crate | Kind | Contents |
+|---|---|---|
+| `ds3-blaze-core` | lib | `fire`, `components`, `models`, `game`, `blaze`, `redirector`, `qos`, `log`, and the new `events`, `hosts`, `vpn` |
+| `ds3-blaze-diag` | lib | `netcheck`, `p2p`, the new `reach`; the protocol test that replaces `selftest` lives in its tests |
+| `ds3-blaze-cli` | bin `ds3-blaze-cli.exe` | argument parsing with `clap` derive, console output; `proxy` and `ea-check` behind the feature `research` |
+| `ds3-blaze-gui` | bin `ds3-blaze.exe` | the window, built with `eframe` |
+
+The players' executable is the GUI, so it takes the name players already know, `ds3-blaze.exe`. The GUI is built with `windows_subsystem = "windows"` and has no console, which is why the command line is a separate executable rather than a mode of the same one. Renaming the command line breaks existing scripts and instructions: the commit that does it is marked `feat!` with a `BREAKING CHANGE:` footer.
+
+## Core
+
+### Server lifecycle
+
+`Server::start(config)` binds the redirector, Blaze and QoS listeners and returns a `ServerHandle`. The handle stops all three through a `CancellationToken`, exposes the event stream and a state snapshot, and owns the `PlayerBook`. The configuration carries every port, so a test can start a server on free ports inside its own process. The defaults stay the named constants in the core (`REDIRECTOR_PORT` and the QoS and Blaze port constants that `main.rs` holds today).
+
+### State and events
+
+The GUI renders from `ServerHandle::snapshot()`: sessions with address, name and login state, refused addresses, and rooms with their state, members and the chapter and restore point read from `GAME_CHECKPOINT`. The snapshot is the source of truth for what the window shows, so a missed event never leaves the window wrong.
+
+Events go out on a `tokio::sync::broadcast` channel. They carry log lines (`Event::Log { tag, text }`) and notices that state changed, which make the GUI repaint. `log!` keeps writing the session file under `logs/`; the core no longer prints to stdout. The CLI subscribes to the channel and prints log lines, which keeps today's console output.
+
+### Player book
+
+`PlayerBook` holds the names by address, the allowed addresses and the "only allowed players" switch behind a `RwLock`. It replaces `Config::player_name`, `player_names` and `only_listed`, so renaming a player or allowing a refused address takes effect for the next connection without restarting the server. `Config::admits` and `Config::name_for` move onto it with their current rules.
+
+### hosts
+
+The `hosts` module carries the behaviour of `scripts/hosts.ps1` over to Rust: the section between `# Added by ds3-blaze` and `# End of ds3-blaze section`, removal of lines ending in the legacy marker, refusal when the section has no end line, the file's own encoding (a byte order mark if present, the ANSI code page otherwise) and line endings, the backup `hosts.ds3-blaze.bak` written without any ds3-blaze entries, and a DNS cache flush afterwards.
+
+The text transformation is a pure function, `rewrite(text, action) -> (updated, backup)`, so it is tested without touching the system file. Reading the current state (`EaServers`, `Redirected(address)`, `Broken`) needs no rights; writing needs an elevated process. The script is deleted once the module and the CLI command below replace it.
+
+### VPN adapters
+
+The `vpn` module lists IPv4 adapters through `GetAdaptersAddresses`, with the same VPN detection `netcheck` uses today (`is_vpn`). The start screen shows the list at once, without the few seconds a PowerShell call takes.
+
+## Diagnostics
+
+### Network findings and fixes
+
+`netcheck` returns `Vec<Finding { severity, text, fix }>` instead of printing. It is split in two: a local part (VPN adapter present, its network profile, firewall rules for the game and for ds3-blaze), which needs no peer, and a route part for a given peer address.
+
+`fix` names an action the GUI can offer as a button: `Fix::GameRule` (inbound UDP on `GAME_PORT`), `Fix::ServerRule` (inbound for the executable that runs the server, needed on the host) and `Fix::PrivateProfile` (the VPN adapter's network set to Private). Each is carried out by the CLI command `fix`, which the GUI starts elevated. After a fix the GUI runs the local part again, and the new findings show whether it worked.
+
+### P2P check
+
+`p2p` has two modes over the same ping exchange as today's `p2pcheck`:
+
+- `Probe { peer }` pings a known peer and answers its pings. The guest runs it against the host as soon as it connects.
+- `Listen` answers any ping and, from the first one, learns the sender and pings it too. The host runs it from "Start server" until the game starts, so the guest's probe finds an answer whenever it runs.
+
+Both bind `GAME_PORT`, which the game needs, so neither may run while `deadspace3.exe` does. Progress arrives as events, and cancellation stops the exchange.
+
+In `Listen` the host sends nothing until the guest's first ping, so that ping has to pass the host's firewall unsolicited. In the game both sides send, and a firewall that tracks UDP flows lets the replies in. A host that never hears the guest's ping therefore gets a warning with its fix, not a failure that stops the steps: the game may still connect.
+
+### Server reachability
+
+`reach` is the guest's check of the host's server. It resolves `gosredirector.ea.com`, which confirms that the hosts entry is in effect, and compares the result with the host's address; asks the redirector for the server instance over SSLv3; sends one `preAuth` to the Blaze server; and queries QoS over HTTP and UDP. It creates no room and starts no matchmaking, so it is safe against a host who is already playing.
+
+The expected hosts address and the server address are separate parameters. The guest expects the host's address and checks the host's server; the host expects 127.0.0.1 and checks its own server through its VPN address, which shows that the listeners answer on the VPN interface.
+
+### Protocol test
+
+The full client scenario of today's `selftest` (login, room creation, the second client's join, matchmaking timeout, QoS) becomes an integration test of `ds3-blaze-diag`. It starts the server with `Server::start` on free ports in the test process. The `selftest` command goes away: against a live host its matchmaking would join the host's real public room, and its two logins break invite matching, which works only while exactly two players are logged in.
+
+## GUI
+
+### Start screen
+
+The start screen asks for the player's name and VPN address (from `vpn`, VPN adapters first) and offers two modes: host a game, or join a friend. It shows the state of the hosts file. When ds3-blaze entries are present while no server or connection is active, as after a crash, it offers to restore the EA servers.
+
+### Step rows
+
+Both modes are built from one widget: a row with a step marker, a title, a one-line summary, a status pill and a chevron, laid out left to right like a table row. A click expands the row to its details, where a warning lists its findings with their fix buttons. Rows stay as the player left them: the GUI does not expand or collapse them by itself.
+
+A mode is a list of steps. Each step owns its state (waiting, running, ok, warning, failed), its summary, its pill and its expanded view; the rendering only reads them. The step logic therefore has unit tests without a window.
+
+The summary carries the information a player watches during play, so a collapsed row is enough: "Carver connected · 1 waiting", "Public · 2/2 · Chapter 4".
+
+### Host steps
+
+| Step | Summary when done | Expanded |
+|---|---|---|
+| Your VPN address | address and adapter; "Start server" | |
+| Point game at this PC | hosts → 127.0.0.1 | the entry, the backup, "Restore EA servers" |
+| Server | listening on the VPN address | the three listeners; `reach` against the VPN address |
+| Players | who is connected, how many are waiting | names editable in place, "Allow" for refused addresses, "Only players I allow" |
+| Direct link to the guest | both directions and latency | findings with fixes, "Check again" |
+| Room | visibility, players, chapter | chapter and restore point, how the guest joined; before a room exists, the step tells the host to start the game and create one |
+| Log | the latest line | recent lines, "Open logs folder" |
+
+"Stop and restore hosts" stops the server and removes the hosts entry.
+
+### Guest steps
+
+| Step | Summary when done | Expanded |
+|---|---|---|
+| Host's VPN address | the address; "Connect" | |
+| Point game at host | hosts → the host's address | the entry, the backup, "Restore EA servers" |
+| Reach host's server | all services answer | each `reach` stage with its result |
+| Direct link to host | both directions and latency | findings with fixes, "Check again" |
+| Start Dead Space 3 | online co-op | quick match for a public game, the EA App invite for a private one |
+
+"Disconnect and restore hosts" removes the hosts entry.
+
+### Order of the steps
+
+The direct link step comes before the game step in both modes because the check needs `GAME_PORT`. The GUI looks for `deadspace3.exe` once a second through a process snapshot (`CreateToolhelp32Snapshot`). When the game appears, the GUI closes the P2P socket and the direct link row shows that the check is paused while the game runs; "Check again" asks the player to close the game first.
+
+### Elevation
+
+Writing the hosts file and applying fixes need administrator rights; the GUI itself runs without them, so the server never runs elevated. The GUI starts `ds3-blaze-cli.exe` next to itself through `ShellExecuteExW` with the verb `runas` (one UAC prompt per action), waits for it, and then checks the outcome by reading the state again: the hosts state needs no rights, and the network findings come from the local check.
+
+### Settings
+
+`ds3-blaze.toml` next to the executable keeps the player's name, the last mode, the last host address and the names of known players. The archive is meant to be unpacked into a folder of its own, where the logs already go.
+
+### Closing
+
+Closing the window while the hosts file points at ds3-blaze asks whether to restore the EA servers, with restoring as the default.
+
+## Command line
+
+`ds3-blaze-cli` uses `clap` derive, so the help and the option errors come from the code:
+
+| Command | Purpose |
+|---|---|
+| `serve` | the server, with today's options |
+| `hosts enable --address IP`, `hosts disable`, `hosts status` | the hosts entry; `enable` and `disable` need an elevated console |
+| `fix game-rule`, `fix server-rule`, `fix network-profile` | the network fixes the GUI offers |
+| `net-check --peer IP` | the network findings |
+| `p2p-check --peer IP`, `p2p-check --listen` | the P2P exchange in either mode |
+| `reach --host IP` | the guest's server check |
+| `proxy`, `ea-check` | research only, built with the feature `research` |
+
+The GUI's settings file does not affect the command line, which stays predictable for tests.
+
+## Packaging and CI
+
+- CI runs from the workspace root: `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -D warnings` (so the `research` code keeps compiling), `cargo build`, `cargo test --workspace`. The step that starts `serve` and runs `selftest` from PowerShell is replaced by the protocol test.
+- `tools/package.ps1` packs both executables, the README and the license. `scripts/hosts.ps1` leaves the archive and the repository. Release builds leave out `research`.
+
+## Documentation roles
+
+The GUI owns the procedure: its step rows say what to do and how to fix what is wrong. The documents stop retelling it.
+
+| Document | Holds | Leaves out |
+|---|---|---|
+| Nexus page | what the mod is and why, requirements, a short start ("run `ds3-blaze.exe`, choose a mode, follow the steps"), going back to EA, limitations, log privacy | commands, options, ports |
+| README | the same short start, the command line with a pointer to `ds3-blaze-cli --help`, the login token warning, development | the option list, which `clap` generates |
+| [network-checks.md](../guides/network-checks.md) | manual checks with the command line for when the GUI is not enough | |
+
+The README and the Nexus page still share the few sentences of the short start, because the Nexus page has to stand on its own. The note in [docs/README.md](../README.md) about keeping the two in step stays, now covering only those sentences. The limitation "names in game come from `--name` and `--player`" changes to the start screen and the host's players table.
+
+## Tests
+
+- `hosts::rewrite`: with and without a byte order mark, ANSI text, CRLF and LF, an empty file, a file without a final line break, legacy-marker lines, a section without an end line, repeated `enable`.
+- `PlayerBook`: admission and naming rules as `Config::admits` and `Config::name_for` have them now, and changes while sessions are open.
+- `p2p`: `Probe` against `Listen` on the loopback address with different ports, including `Listen` learning its peer from the first ping.
+- `reach` against a server started in the test.
+- The protocol test described above.
+- The steps of each mode as state machines, without a window.
+
+## Stages
+
+Each stage is a branch of its own, merged into `main` when CI passes. A stage that removes or changes a command also updates the README, the Nexus page and the guides that use it, so `main` never documents a command that is gone. Until stage 6 the command line keeps the name `ds3-blaze.exe`.
+
+1. Workspace split with no change in behaviour: the crates, the moved modules, CI and `package.ps1` pointed at the workspace.
+2. `Server::start` with ports in the configuration, the protocol test, the `selftest` command and its CI step removed.
+3. Events, snapshot and `PlayerBook`; the core stops printing and the CLI prints the events.
+4. `clap`, the `hosts` module and `hosts` command, `scripts/hosts.ps1` removed.
+5. Diagnostics: findings and fixes, the `fix` command, `p2p` modes, `reach`.
+6. The GUI, and the renaming of the executables.
+7. README, Nexus page, network-checks and the docs index rewritten for the GUI.
+
+## Future work
+
+- The guest tells the host its own nickname, so the host no longer has to type it. The way the guest sends it (for example a request to the host's QoS HTTP server) and how the host confirms it are still to be thought through. The same channel would let the guest's window show the name the host sees, which `reach` cannot learn without a full login.
