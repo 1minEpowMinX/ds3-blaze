@@ -21,6 +21,12 @@ Protocol analysis, traffic captures and the work plan: [docs/](docs/README.md).
 
 Release archives are on the repository's Releases page. Each holds `ds3-blaze.exe`, `scripts\hosts.ps1`, this README and the license; the commands below run from the unpacked folder.
 
+GitHub Actions builds every release archive and signs a build provenance attestation for it and for the `ds3-blaze.exe` inside. With the [GitHub CLI](https://cli.github.com/) installed, either file can be checked against this repository's release workflow; the command fails for a file that workflow did not produce:
+
+```powershell
+gh attestation verify <archive or ds3-blaze.exe> --repo 1minEpowMinX/ds3-blaze --signer-workflow 1minEpowMinX/ds3-blaze/.github/workflows/release.yml
+```
+
 To build from source instead, install stable Rust on Windows (`net-check` reads the network settings through PowerShell) and run `tools\package.ps1`. It builds the release binary and writes the same archive to `dist\`.
 
 ```powershell
@@ -92,7 +98,7 @@ The server writes its logs to `logs/` under the directory it is started from. Lo
 
 Each feature or fix is developed on its own branch named `<type>/<name>`, where `<type>` is one of the commit types below, and lands on `main` through a merge (`git merge --no-ff`); nothing is committed to `main` directly.
 
-CI on GitHub Actions checks every push to any branch and every pull request into `main`: `tools\check-commits.ps1` over the branch name and the subjects of the commits the branch adds, `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with warnings as errors, a build and `selftest` against a local `serve`. A newer push to the same branch cancels the check still running for it. Pushing an annotated tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive and opens a draft release. Its notes are rendered by [git-cliff](https://git-cliff.org) from `cliff.toml`: the tag's message comes first as the summary, followed by the commits since the previous tag. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), with the types listed in `$Types` of `tools\check-commits.ps1`; a `Deploy:` trailer lands under "Action required" in the notes. With git-cliff installed, `git cliff --unreleased` previews the next release's notes.
+CI on GitHub Actions checks every push to any branch and every pull request into `main`: `tools\check-commits.ps1` over the branch name and the subjects of the commits the branch adds, `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with warnings as errors, a build and `selftest` against a local `serve`. A newer push to the same branch cancels the check still running for it. Pushing an annotated tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive, attests its build provenance and opens a draft release. Its notes are rendered by [git-cliff](https://git-cliff.org) from `cliff.toml`: the tag's message comes first as the summary, followed by the commits since the previous tag. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), with the types listed in `$Types` of `tools\check-commits.ps1`; a `Deploy:` trailer lands under "Action required" in the notes. With git-cliff installed, `git cliff --unreleased` previews the next release's notes.
 
 The same checks run locally once the hooks are enabled in a clone: the repository check before each commit, and the naming check on each commit message, which also refuses a commit on `main` other than one that concludes a merge:
 
