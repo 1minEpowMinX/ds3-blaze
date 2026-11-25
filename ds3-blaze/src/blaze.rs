@@ -495,8 +495,9 @@ impl Session {
                 Some(player_id) => {
                     let duration =
                         read(frame, |r| r.tag::<u32>(b"DUR")).unwrap_or(DEFAULT_MATCHMAKING_MS);
+                    let version = read(frame, |r| r.tag::<String>(b"GVER"));
                     self.stop_matchmaking();
-                    self.start_matchmaking(player_id, duration, h)
+                    self.start_matchmaking(player_id, duration, version, h)
                 }
                 None => {
                     log!(&self.tag, "startMatchmaking before login");
@@ -705,19 +706,23 @@ impl Session {
     /// Starts matchmaking session for player `player_id` lasting `duration`
     /// milliseconds and returns the `startMatchmaking` response to `request`.
     ///
-    /// A game open to matchmaking is joined right after the response; otherwise a
-    /// task looks for one every [`MATCHMAKING_RETRY`] and sends `MatchmakingFailed`
-    /// once `duration` has passed.
+    /// Only games created with game protocol version `version` (`GVER`) qualify,
+    /// or any game when the request carried none. A qualifying game open to
+    /// matchmaking is joined right after the response; otherwise a task looks for
+    /// one every [`MATCHMAKING_RETRY`] and sends `MatchmakingFailed` once
+    /// `duration` has passed.
     fn start_matchmaking(
         &mut self,
         player_id: u32,
         duration: u32,
+        version: Option<String>,
         request: &crate::fire::FrameHeader,
     ) -> Frame {
         let mut games = lock_games(&self.config);
         let session_id = games.next_matchmaking_id();
         let reason = game::SetupReason::Matchmaking { session_id };
-        if let Some(ticket) = games.find_match(player_id).and_then(|game_id| {
+        let found = games.find_match(player_id, version.as_deref());
+        if let Some(ticket) = found.and_then(|game_id| {
             games
                 .join(
                     game_id,
@@ -754,7 +759,8 @@ impl Session {
                 .await;
                 let mut out = Outbox::default();
                 let mut games = lock_games(&config);
-                let joined = games.find_match(player_id).and_then(|game_id| {
+                let found = games.find_match(player_id, version.as_deref());
+                let joined = found.and_then(|game_id| {
                     games
                         .join(
                             game_id,

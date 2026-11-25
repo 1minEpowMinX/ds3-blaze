@@ -572,10 +572,17 @@ impl Games {
 
     /// Returns the oldest game matchmaking may place player `player_id` in, or
     /// `None` when there is none.
-    pub fn find_match(&self, player_id: u32) -> Option<u32> {
+    ///
+    /// With `version` given, only games created with that game protocol version
+    /// (`VSTR`) qualify.
+    pub fn find_match(&self, player_id: u32, version: Option<&str>) -> Option<u32> {
         self.games
             .values()
-            .filter(|game| game.open_to_matchmaking() && game.member(player_id).is_none())
+            .filter(|game| {
+                game.open_to_matchmaking()
+                    && game.member(player_id).is_none()
+                    && version.is_none_or(|v| game.request.version == v)
+            })
             .map(|game| game.id)
             .min()
     }
@@ -1286,6 +1293,19 @@ mod tests {
         games.update_mesh(ticket.game_id, host, &[link], &mut out);
         assert!(!games.expire_join(&ticket, &mut out));
         assert_eq!(games.games_of(ticket.player_id), [ticket.game_id]);
+    }
+
+    #[test]
+    fn matchmaking_skips_other_game_versions() {
+        let mut games = Games::default();
+        let host = log_in(&mut games, "host");
+        let guest = log_in(&mut games, "guest");
+        let mut out = Outbox::default();
+        let id = games.create(request("v1"), host, &mut out).unwrap();
+        games.advance_state(id, STATE_PRE_GAME, &mut out);
+        assert_eq!(games.find_match(guest, Some("v2")), None);
+        assert_eq!(games.find_match(guest, Some("v1")), Some(id));
+        assert_eq!(games.find_match(guest, None), Some(id));
     }
 
     fn by_account(account_id: u64) -> UserIdentification {
