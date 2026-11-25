@@ -3,8 +3,10 @@
 Adds or removes the hosts entries that send Dead Space 3 to ds3-blaze.
 
 .DESCRIPTION
-Every line the script writes ends with the marker "# ds3-blaze"; -Disable
-removes exactly those lines and leaves the rest of the file untouched. The file
+The entries go at the end of the file in a section that opens with $BeginLine
+and closes with $EndLine, as Docker Desktop and similar programs mark theirs.
+-Disable removes that section, and any line that ends with $LegacyMarker as
+earlier versions wrote them, and leaves the rest of the file untouched. The file
 keeps its encoding (a byte order mark if it had one, the ANSI code page
 otherwise) and its line endings.
 
@@ -13,10 +15,10 @@ so the backup holds the file as it was before the latest run. Needs an elevated
 PowerShell. Flushes the DNS cache afterwards.
 
 .PARAMETER Enable
-Adds the entries, replacing any earlier ds3-blaze lines.
+Adds the section, replacing any earlier ds3-blaze entries.
 
 .PARAMETER Disable
-Removes the entries.
+Removes the ds3-blaze entries.
 
 .PARAMETER Address
 IPv4 address the redirector host resolves to, in dotted form. Defaults to
@@ -32,7 +34,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Marker = '# ds3-blaze'
+$BeginLine = '# Added by ds3-blaze'
+# Unlike Docker Desktop's "# End of section", this end line names its owner, so
+# removing the section never reaches into another program's.
+$EndLine = '# End of ds3-blaze section'
+$LegacyMarker = '# ds3-blaze'
 $Hosts = @('gosredirector.ea.com')
 $Path = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
 $Backup = "$Path.ds3-blaze.bak"
@@ -70,10 +76,29 @@ $lines = if ($text) { @($text -split '\r?\n') } else { @() }
 # A final line break leaves an empty last element, which the join restores.
 $endsWithNewline = $lines.Count -gt 1 -and $lines[-1] -eq ''
 if ($endsWithNewline) { $lines = @($lines | Select-Object -SkipLast 1) }
-$lines = @($lines | Where-Object { -not $_.EndsWith($Marker) })
-if ($Enable) {
-    $lines += $Hosts | ForEach-Object { "$Address $_ $Marker" }
+$kept = New-Object Collections.Generic.List[string]
+$inSection = $false
+foreach ($line in $lines) {
+    $trimmed = $line.Trim()
+    if ($inSection) {
+        if ($trimmed -eq $EndLine) { $inSection = $false }
+    } elseif ($trimmed -eq $BeginLine) {
+        $inSection = $true
+    } elseif (-not $line.EndsWith($LegacyMarker)) {
+        $kept.Add($line)
+    }
 }
+# Without its end line the section's extent is unknown, and guessing could
+# delete the user's own entries.
+if ($inSection) {
+    Write-Error "$Path has '$BeginLine' without '$EndLine'; remove the ds3-blaze lines by hand, then run the script again."
+}
+if ($Enable) {
+    $kept.Add($BeginLine)
+    $Hosts | ForEach-Object { $kept.Add("$Address $_") }
+    $kept.Add($EndLine)
+}
+$lines = $kept.ToArray()
 $updated = $lines -join $newline
 if ($lines.Count -gt 0 -and ($endsWithNewline -or $Enable)) { $updated += $newline }
 
@@ -86,6 +111,9 @@ if ($LASTEXITCODE -ne 0) {
     Write-Warning "ipconfig /flushdns failed with exit code $LASTEXITCODE; the game may keep the old address until the DNS cache expires or Windows restarts."
 }
 
-Write-Host "hosts entries marked '$Marker':"
-Get-Content $Path | Where-Object { $_.EndsWith($Marker) } | ForEach-Object { Write-Host "  $_" }
-if ($Disable) { Write-Host '  (none, removed)' }
+if ($Enable) {
+    Write-Host 'hosts section added:'
+    $lines | Select-Object -Last ($Hosts.Count + 2) | ForEach-Object { Write-Host "  $_" }
+} else {
+    Write-Host 'hosts entries of ds3-blaze removed'
+}
