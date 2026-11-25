@@ -64,6 +64,8 @@ const DESTROY_REASON_HOST_LEAVING: u8 = 0x3;
 pub const ERR_INVALID_GAME_ID: u16 = 2;
 /// GameManager error `GAMEMANAGER_ERR_GAME_FULL`.
 pub const ERR_GAME_FULL: u16 = 4;
+/// GameManager error `GAMEMANAGER_ERR_PERMISSION_DENIED`.
+pub const ERR_PERMISSION_DENIED: u16 = 0x1e;
 /// GameManager error `GAMEMANAGER_ERR_PLAYER_NOT_FOUND`.
 pub const ERR_PLAYER_NOT_FOUND: u16 = 101;
 /// GameManager error `GAMEMANAGER_ERR_ALREADY_GAME_MEMBER`.
@@ -561,6 +563,11 @@ impl Games {
         self.games.contains_key(&id)
     }
 
+    /// Returns the player id of the host of game `id`, or `None` for an unknown game.
+    pub fn host_of(&self, id: u32) -> Option<u32> {
+        self.games.get(&id).map(|game| game.players[0].player.id)
+    }
+
     /// Returns the ids of the games player `player_id` is a member of, ascending.
     pub fn games_of(&self, player_id: u32) -> Vec<u32> {
         let mut ids: Vec<u32> = self
@@ -789,7 +796,8 @@ impl Games {
     ///
     /// A connected link completes the join of whichever end is still connecting.
     /// A link reported down removes the guest at one end: the target when the host
-    /// reports it, the reporter when it is a guest's link to the host.
+    /// reports it, the reporter when it is a guest's link to the host. A report
+    /// from a player outside the game changes nothing.
     pub fn update_mesh(
         &mut self,
         id: u32,
@@ -800,6 +808,11 @@ impl Games {
         let Some(game) = self.games.get_mut(&id) else {
             return vec![format!("game {id} unknown")];
         };
+        if game.member(reporter).is_none() {
+            return vec![format!(
+                "player {reporter} is not in game {id}, report ignored"
+            )];
+        }
         let host_id = game.players[0].player.id;
         let mut events = Vec::new();
         let mut dropped = Vec::new();
@@ -1296,6 +1309,26 @@ mod tests {
         games.update_mesh(ticket.game_id, host, &[link], &mut out);
         assert!(!games.expire_join(&ticket, &mut out));
         assert_eq!(games.games_of(ticket.player_id), [ticket.game_id]);
+    }
+
+    #[test]
+    fn mesh_report_from_outside_the_game_is_ignored() {
+        let (mut games, ticket, host) = host_and_guest();
+        let stranger = log_in(&mut games, "stranger");
+        let mut out = Outbox::default();
+        let link = MeshLink {
+            player_id: host,
+            status: LINK_CONNECTED,
+        };
+        games.update_mesh(ticket.game_id, stranger, &[link], &mut out);
+        let down = MeshLink {
+            player_id: ticket.player_id,
+            status: LINK_DISCONNECTED,
+        };
+        games.update_mesh(ticket.game_id, stranger, &[down], &mut out);
+        assert!(commands(&out).is_empty());
+        assert_eq!(games.host_of(ticket.game_id), Some(host));
+        assert!(games.expire_join(&ticket, &mut out));
     }
 
     #[test]

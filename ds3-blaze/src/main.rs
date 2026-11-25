@@ -38,13 +38,15 @@ const DEFAULT_NAME: &str = "DS3Player";
 const USAGE: &str = "\
 usage:
   ds3-blaze serve [--bind IP] [--advertise IP] [--blaze-port PORT] [--name NAME]
-                  [--player IP=NAME]...
+                  [--player IP=NAME]... [--only-listed]
       --bind        address all listeners bind to (default 127.0.0.1)
       --advertise   IP the game is told to reach this server at (default 127.0.0.1)
       --blaze-port  main Blaze server port (default 42128)
       --name        display name of the player on this machine (default DS3Player)
       --player      display name of the player connecting from IP; others get
                     Player-<last octet of their IP>
+      --only-listed refuse Blaze connections from addresses other than this
+                    machine, --advertise and the --player entries
   ds3-blaze selftest [--host IP]
       --host        server to test (default 127.0.0.1)
   ds3-blaze proxy [--ea-redirector IP:PORT]
@@ -68,6 +70,7 @@ struct ServeArgs {
     blaze_port: u16,
     name: String,
     players: Vec<(Ipv4Addr, String)>,
+    only_listed: bool,
 }
 
 fn parse_serve(args: &[String]) -> Result<ServeArgs, String> {
@@ -77,6 +80,7 @@ fn parse_serve(args: &[String]) -> Result<ServeArgs, String> {
         blaze_port: DEFAULT_BLAZE_PORT,
         name: DEFAULT_NAME.to_string(),
         players: Vec::new(),
+        only_listed: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -99,6 +103,7 @@ fn parse_serve(args: &[String]) -> Result<ServeArgs, String> {
                 }
                 out.players.push((ip, name.to_string()));
             }
+            "--only-listed" => out.only_listed = true,
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -188,6 +193,7 @@ async fn serve(args: ServeArgs) -> std::io::Result<()> {
         },
         player_name: args.name,
         player_names: args.players,
+        only_listed: args.only_listed,
         games: Default::default(),
     });
     log!(

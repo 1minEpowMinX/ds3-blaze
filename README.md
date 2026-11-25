@@ -49,6 +49,8 @@ The server runs on the host's PC.
    .\ds3-blaze.exe serve --bind 0.0.0.0 --advertise <host's VPN address> --name <host's name> --player <guest's VPN address>=<guest's name>
    ```
 
+   On a VPN network open to strangers, add `--only-listed`: the server then accepts only your own PC and the `--player` addresses.
+
 2. Point `gosredirector.ea.com` at your own PC from an elevated PowerShell:
 
    ```powershell

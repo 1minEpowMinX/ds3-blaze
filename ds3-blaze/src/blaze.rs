@@ -32,10 +32,22 @@ pub struct Config {
     pub player_name: String,
     /// Display names of players connecting from other addresses.
     pub player_names: Vec<(Ipv4Addr, String)>,
+    /// Whether connections are accepted only from addresses [`Config::admits`] lists.
+    pub only_listed: bool,
     pub games: Mutex<Games>,
 }
 
 impl Config {
+    /// Returns whether a connection from `ip` may open a session: always without
+    /// `only_listed`, otherwise only from this machine, `advertise` or an address
+    /// in `player_names`.
+    fn admits(&self, ip: Ipv4Addr) -> bool {
+        !self.only_listed
+            || ip.is_loopback()
+            || ip == self.advertise
+            || self.player_names.iter().any(|(addr, _)| *addr == ip)
+    }
+
     /// Returns the display name of a player connecting from `ip`.
     ///
     /// Addresses listed in `player_names` get their entry; this machine and
@@ -58,13 +70,25 @@ impl Config {
     }
 }
 
-/// Accepts sessions on `bind` until the listener fails.
+/// Accepts sessions on `bind` until the listener fails, closing connections
+/// from addresses the configuration does not admit.
 pub async fn run(bind: SocketAddr, config: Arc<Config>) -> std::io::Result<()> {
     let listener = TcpListener::bind(bind).await?;
     log!("blaze", "listening on {bind} (plain TCP)");
+    if config.only_listed {
+        log!(
+            "blaze",
+            "accepting only this machine, {} and the --player addresses",
+            config.advertise
+        );
+    }
     let next_id = Arc::new(AtomicU32::new(1));
     loop {
         let (tcp, peer) = listener.accept().await?;
+        if !config.admits(peer_ipv4(peer)) {
+            log!("blaze", "{peer}: refused, address not listed");
+            continue;
+        }
         let id = next_id.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(serve_session(tcp, peer, id, config.clone()));
     }
@@ -116,10 +140,7 @@ async fn serve_session(tcp: TcpStream, peer: SocketAddr, id: u32, config: Arc<Co
 
     let mut session = Session {
         tag: tag.clone(),
-        peer_ip: match peer.ip() {
-            std::net::IpAddr::V4(ip) => ip,
-            std::net::IpAddr::V6(ip) => ip.to_ipv4_mapped().unwrap_or(Ipv4Addr::UNSPECIFIED),
-        },
+        peer_ip: peer_ipv4(peer),
         config,
         tx,
         locale: u32::from_be_bytes(*b"enUS"),
@@ -172,6 +193,9 @@ impl Session {
 
     /// Returns the response to `frame` after sending any notifications that precede it.
     fn handle(&mut self, frame: &Frame) -> Frame {
+        if let Some(denied) = self.deny_game_change(frame) {
+            return denied;
+        }
         let h = &frame.header;
         let host = self.config.advertise;
         match (h.component, h.command) {
@@ -599,6 +623,42 @@ impl Session {
         }
     }
 
+    /// Returns error `GAMEMANAGER_ERR_PERMISSION_DENIED` for a GameManager request
+    /// that changes an existing game on behalf of a player without the right to,
+    /// or `None` for any other request.
+    ///
+    /// The game's state, settings and attributes and the game itself belong to
+    /// its host; a member's attributes and membership belong to that member and
+    /// to the host. A request naming an unknown game passes, and its handler
+    /// answers it as before.
+    fn deny_game_change(&self, frame: &Frame) -> Option<Frame> {
+        let h = &frame.header;
+        if h.component != gm::COMPONENT {
+            return None;
+        }
+        let target = match h.command {
+            gm::ADVANCE_GAME_STATE
+            | gm::SET_GAME_SETTINGS
+            | gm::SET_GAME_ATTRIBUTES
+            | gm::DESTROY_GAME => None,
+            gm::SET_PLAYER_ATTRIBUTES | gm::REMOVE_PLAYER => read(frame, |r| r.tag::<u32>(b"PID")),
+            _ => return None,
+        };
+        let id = read(frame, |r| r.tag::<u32>(b"GID")).unwrap_or_default();
+        let host = self.games().host_of(id)?;
+        let requester = self.player.as_ref().map(|p| p.id);
+        if requester == Some(host) || (requester.is_some() && requester == target) {
+            return None;
+        }
+        log!(
+            &self.tag,
+            "{} on game {id} refused: player {requester:?} is not its host{}",
+            crate::components::command_name(h.component, h.command, false).unwrap_or("request"),
+            target.map_or(String::new(), |t| format!(" nor player {t}"))
+        );
+        Some(Frame::error(h, game::ERR_PERMISSION_DENIED))
+    }
+
     /// Returns the `lookupUsers` response to `frame`: the logged-in users it names,
     /// or error `USER_ERR_USER_NOT_FOUND` when it names none.
     fn lookup_users(&self, frame: &Frame) -> Frame {
@@ -803,6 +863,15 @@ impl Session {
     }
 }
 
+/// Returns the IPv4 address of `peer`: its IPv4-mapped form for IPv6, or the
+/// unspecified address for any other IPv6 address.
+fn peer_ipv4(peer: SocketAddr) -> Ipv4Addr {
+    match peer.ip() {
+        std::net::IpAddr::V4(ip) => ip,
+        std::net::IpAddr::V6(ip) => ip.to_ipv4_mapped().unwrap_or(Ipv4Addr::UNSPECIFIED),
+    }
+}
+
 /// Returns the server's games, locked.
 fn lock_games(config: &Config) -> MutexGuard<'_, Games> {
     // A panic while holding the lock leaves plain data behind; keep serving it.
@@ -859,4 +928,37 @@ fn read<T>(
     read_fn: impl FnOnce(&mut TdfDeserializer<'_>) -> tdf::prelude::DecodeResult<T>,
 ) -> Option<T> {
     read_fn(&mut TdfDeserializer::new(&frame.contents)).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(only_listed: bool) -> Config {
+        Config {
+            advertise: Ipv4Addr::new(26, 0, 0, 1),
+            qos: QosHttp {
+                host: Ipv4Addr::LOCALHOST,
+                port: 0,
+            },
+            player_name: "host".into(),
+            player_names: vec![(Ipv4Addr::new(26, 0, 0, 2), "guest".into())],
+            only_listed,
+            games: Default::default(),
+        }
+    }
+
+    #[test]
+    fn only_listed_admits_this_machine_and_listed_players() {
+        let config = config(true);
+        assert!(config.admits(Ipv4Addr::LOCALHOST));
+        assert!(config.admits(Ipv4Addr::new(26, 0, 0, 1)));
+        assert!(config.admits(Ipv4Addr::new(26, 0, 0, 2)));
+        assert!(!config.admits(Ipv4Addr::new(26, 0, 0, 3)));
+    }
+
+    #[test]
+    fn without_only_listed_every_address_is_admitted() {
+        assert!(config(false).admits(Ipv4Addr::new(26, 0, 0, 3)));
+    }
 }
