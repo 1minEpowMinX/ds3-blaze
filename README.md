@@ -94,6 +94,8 @@ Both players run `hosts.ps1 -Disable` to go back to the EA servers. Each run of 
 
 The server writes its logs to `logs/` under the directory it is started from. Logs of the `proxy` command contain EA account data, the persona name, the friend list and IP addresses. Do not publish them. `.gitignore` keeps logs, traffic captures, memory dumps and game files out of the repository.
 
+When a player logs in, the game sends the server the EA login token it got from the EA App. `ds3-blaze` ignores the token and leaves it out of the logs, but it still reaches the host's PC in plain text, and while it is valid it can sign in to EA as that player. Encryption cannot prevent this, since the host's PC is the recipient. Join only a host you trust.
+
 ## Development
 
 Each feature or fix is developed on its own branch named `<type>/<name>`, where `<type>` is one of the commit types below, and lands on `main` through a merge (`git merge --no-ff`); nothing is committed to `main` directly.
