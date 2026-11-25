@@ -56,3 +56,13 @@ A second player's join cannot be captured from EA's servers: co-op through EA do
 - **Host leaving.** There is no host migration: the guest receives the host's `PlayerRemoved` and `GameRemoved` (`HOST_LEAVING`), and the room is destroyed.
 
 The self-test exercises all of this with a second client. In game with two PCs over VPN (log `ds3-blaze-20261125-021400.log`), quick match went through completely: the guest joined a public room through `startMatchmaking`, both sides reported a `CONNECTED` link in `updateMeshConnection`, the game ran for about six minutes, and both left through `removePlayer`. An EA App invite in the same run hung on `lookupUsers`, which had no handler yet; with the handler it goes through (see above). Before a two-PC run, check the network as described in [network-checks.md](../guides/network-checks.md).
+
+## DLC (2026-11-24)
+
+The server does not report DLC ownership; the online pass is the only entitlement the game needs from Blaze.
+
+- **EA's reply.** In the proxy log `ds3-blaze-20261124-144446.log`, EA answers `listEntitlements` for the groups `DeadSpace`, `DeadSpace3`, `DeadSpace3PC` with a single entitlement: `ONLINE_ACCESS` in `DeadSpace3PC` (`TYPE 1`, `STAT 1`). `PROJECT10_CODE_CONSUMED` is not in it either, although the emulator grants it.
+- **Where the game checks DLC.** The exe strings hold Origin SDK LSX requests (`QueryEntitlements`, `QueryOffers`, `ConsumeEntitlement`) and the item tags `DS3:PDLC_DLC1`, `DS3:PDLC_TUNDRA`, `DS3:PDLC_MARAUDER` and others. Ownership is asked of the EA App on the same PC, and the content is loaded from local files (`dlc\%s\%s.toc`). Errors such as `$load_failed_dlc_unauthorized` and `$dlc_join_failed_chapter` are the client's own.
+- **The only DLC field in Blaze traffic** is the matchmaking rule `gameDSMapPackRule` in `startMatchmaking`; without DLC it comes with no `VALU`. The emulator ignores matchmaking rules (it compares only the game version), so quick match may place a player without a DLC chapter in a room that is in one, and the client then refuses the join itself.
+
+Not verified: the captured account owns no DLC, so EA's `listEntitlements` reply and the `gameDSMapPackRule` values for a DLC owner are unknown.
