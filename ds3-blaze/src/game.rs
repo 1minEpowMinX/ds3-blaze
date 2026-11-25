@@ -468,9 +468,9 @@ impl Games {
     /// Returns the logged-in player that `identity` names under lookup type
     /// `lookup_type` (a `LOOKUP_BY_*` value), or `None`.
     ///
-    /// An account id that is neither a player id nor bound yet is bound to the
-    /// only logged-in player other than `requester` without a bound account id;
-    /// the binding lasts until the server stops.
+    /// An account id that is neither a player id nor bound to a logged-in player
+    /// is bound to the only logged-in player other than `requester` without a
+    /// bound account id. A binding lasts until a lookup finds its player offline.
     pub fn find_user(
         &mut self,
         requester: u32,
@@ -496,10 +496,13 @@ impl Games {
             models::LOOKUP_BY_ACCOUNT_ID => {
                 let account_id = identity.account_id;
                 if let Some(&player_id) = self.accounts.get(&account_id) {
-                    return self.users.contains_key(&player_id).then_some(FoundUser {
-                        player_id,
-                        bound: false,
-                    });
+                    if self.users.contains_key(&player_id) {
+                        return known(player_id);
+                    }
+                    // The bound player is offline. The same person logging in again
+                    // under another player id (a `-2` suffix while the old session
+                    // lingers) would otherwise stay unreachable until a restart.
+                    self.accounts.remove(&account_id);
                 }
                 if let Some(id) = u32::try_from(account_id)
                     .ok()
@@ -1335,6 +1338,28 @@ mod tests {
             .find_user(host, LOOKUP_BY_ACCOUNT_ID, &by_account(1_000_000_000_002))
             .unwrap();
         assert_eq!(back.player_id, guest);
+    }
+
+    #[test]
+    fn account_bound_to_an_offline_player_binds_again() {
+        let mut games = Games::default();
+        let guest = log_in(&mut games, "guest");
+        let host = log_in(&mut games, "host");
+        let account = by_account(1_000_000_000_001);
+        assert_eq!(
+            games
+                .find_user(guest, LOOKUP_BY_ACCOUNT_ID, &account)
+                .unwrap()
+                .player_id,
+            host
+        );
+        let tx = games.users[&host].tx.clone();
+        games.log_out(host, &tx);
+        let host_again = log_in(&mut games, "host-2");
+        let found = games
+            .find_user(guest, LOOKUP_BY_ACCOUNT_ID, &account)
+            .unwrap();
+        assert_eq!((found.player_id, found.bound), (host_again, true));
     }
 
     #[test]
