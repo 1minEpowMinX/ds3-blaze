@@ -88,7 +88,7 @@ If the guest does not get in, the `logs\` folder shows how far the server got. T
 
 ### Afterwards
 
-Both players run `hosts.ps1 -Disable` to go back to the EA servers.
+Both players run `hosts.ps1 -Disable` to go back to the EA servers. Each run of the script first copies the hosts file to `hosts.ds3-blaze.bak` beside it, so the file as it was before the latest run can be restored from there.
 
 ## Logs and privacy
 
