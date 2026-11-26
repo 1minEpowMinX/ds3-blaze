@@ -33,7 +33,7 @@ To build from source instead, install stable Rust on Windows (`net-check` reads 
 powershell -ExecutionPolicy Bypass -File .\tools\package.ps1
 ```
 
-Running `ds3-blaze.exe` without arguments prints its commands and their options.
+`.\ds3-blaze.exe --help` lists the commands, and `.\ds3-blaze.exe <command> --help` the options of one.
 
 ## Running
 
@@ -94,7 +94,13 @@ When a player logs in, the game sends the server the EA login token it got from 
 
 Each feature or fix is developed on its own branch named `<type>/<name>`, where `<type>` is one of the commit types below, and lands on `main` through a merge (`git merge --no-ff`); nothing is committed to `main` directly.
 
-CI on GitHub Actions checks every push to any branch and every pull request into `main`: `tools\check-commits.ps1` over the branch name and the subjects of the commits the branch adds, `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with warnings as errors, a build and the tests, among them a protocol test that runs the game's client sequence against a server started inside the test. A newer push to the same branch cancels the check still running for it. Pushing an annotated tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive, attests its build provenance and opens a draft release. Its notes are rendered by [git-cliff](https://git-cliff.org) from `cliff.toml`: the tag's message comes first as the summary, followed by the commits since the previous tag. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), with the types listed in `$Types` of `tools\check-commits.ps1`; a `Deploy:` trailer lands under "Action required" in the notes. With git-cliff installed, `git cliff --unreleased` previews the next release's notes.
+CI on GitHub Actions checks every push to any branch and every pull request into `main`: `tools\check-commits.ps1` over the branch name and the subjects of the commits the branch adds, `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with every feature on and warnings as errors, a build and the tests, among them a protocol test that runs the game's client sequence against a server started inside the test. A newer push to the same branch cancels the check still running for it. Pushing an annotated tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive, attests its build provenance and opens a draft release. Its notes are rendered by [git-cliff](https://git-cliff.org) from `cliff.toml`: the tag's message comes first as the summary, followed by the commits since the previous tag. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), with the types listed in `$Types` of `tools\check-commits.ps1`; a `Deploy:` trailer lands under "Action required" in the notes. With git-cliff installed, `git cliff --unreleased` previews the next release's notes.
+
+The `proxy` and `ea-check` commands, used for protocol research, exist only in a build with the `research` feature, which release archives leave out:
+
+```powershell
+cargo build --features research --manifest-path ds3-blaze\Cargo.toml
+```
 
 The same checks run locally once the hooks are enabled in a clone: the repository check before each commit, and the naming check on each commit message, which also refuses a commit on `main` other than one that concludes a merge:
 
