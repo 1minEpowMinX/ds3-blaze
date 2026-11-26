@@ -39,10 +39,35 @@ enum Screen {
         host: String,
         /// Why the typed address was refused.
         refused: Option<String>,
+        folds: Folds,
     },
     Host {
         flow: Box<HostFlow>,
+        folds: Folds,
     },
+}
+
+/// Which parts of a mode's setup card the player opened.
+///
+/// A mode's screen holds its own, so nothing opened in one mode stays open
+/// in the other; starting, connecting and stopping close them all.
+#[derive(Default)]
+struct Folds {
+    /// Whether each step's row is open, by position.
+    rows: Vec<bool>,
+    /// Whether the folded "Setup done" line is open; it folds again once a
+    /// step needs attention.
+    setup: bool,
+}
+
+impl Folds {
+    /// Returns the folds of `rows` steps, all closed.
+    fn closed(rows: usize) -> Folds {
+        Folds {
+            rows: vec![false; rows],
+            setup: false,
+        }
+    }
 }
 
 /// What the player did on a mode's screen during a frame.
@@ -69,11 +94,6 @@ pub struct App {
     settings: Settings,
     settings_path: PathBuf,
     screen: Screen,
-    /// Whether each row of the mode's steps is open, by position.
-    open: Vec<bool>,
-    /// Whether the player opened the folded "Setup done" line; it folds
-    /// again once a step needs attention and then ends.
-    setup_open: bool,
     /// The error of saving the settings last, shown until a save succeeds.
     save_error: Option<String>,
     runtime: tokio::runtime::Runtime,
@@ -106,8 +126,6 @@ impl App {
             settings,
             settings_path,
             screen: Screen::Start(form),
-            open: Vec::new(),
-            setup_open: false,
             save_error: None,
             runtime: tokio::runtime::Runtime::new()?,
             done_sender,
@@ -132,13 +150,15 @@ impl App {
         let Ok(value) = std::env::var(preview::VARIABLE) else {
             return self;
         };
-        let guest = |flow| Screen::Guest {
+        let guest = |flow: GuestFlow| Screen::Guest {
+            folds: Folds::closed(flow.steps().len()),
             flow: Box::new(flow),
             own: preview::GUEST,
             host: preview::HOST.to_string(),
             refused: None,
         };
-        let host = |flow| Screen::Host {
+        let host = |flow: HostFlow| Screen::Host {
+            folds: Folds::closed(flow.steps().len()),
             flow: Box::new(flow),
         };
         let (screen, name, open) = match Preview::parse(&value) {
@@ -168,9 +188,8 @@ impl App {
         self.settings_path = std::env::temp_dir().join("ds3-blaze-preview.toml");
         self.settings.name = name.into();
         self.screen = screen;
-        self.open = vec![false; 8];
-        if let Some(open) = open {
-            self.open[open] = true;
+        if let (Some(open), Screen::Guest { folds, .. }) = (open, &mut self.screen) {
+            folds.rows[open] = true;
         }
         self
     }
@@ -437,30 +456,32 @@ impl App {
         self.settings.mode = Some(mode);
         self.save();
         self.screen = match mode {
-            Mode::Guest => Screen::Guest {
-                flow: Box::new(GuestFlow::new(
+            Mode::Guest => {
+                let flow = GuestFlow::new(
                     own,
                     name,
                     self.settings.host.unwrap_or(Ipv4Addr::UNSPECIFIED),
-                )),
-                own,
-                host: self
-                    .settings
-                    .host
-                    .map(|host| host.to_string())
-                    .unwrap_or_default(),
-                refused: None,
-            },
-            Mode::Host => Screen::Host {
-                flow: Box::new(HostFlow::new(own, name, self.settings.players.clone())),
-            },
+                );
+                Screen::Guest {
+                    folds: Folds::closed(flow.steps().len()),
+                    flow: Box::new(flow),
+                    own,
+                    host: self
+                        .settings
+                        .host
+                        .map(|host| host.to_string())
+                        .unwrap_or_default(),
+                    refused: None,
+                }
+            }
+            Mode::Host => {
+                let flow = HostFlow::new(own, name, self.settings.players.clone());
+                Screen::Host {
+                    folds: Folds::closed(flow.steps().len()),
+                    flow: Box::new(flow),
+                }
+            }
         };
-        let rows = match &self.screen {
-            Screen::Guest { flow, .. } => flow.steps().len(),
-            Screen::Host { flow, .. } => flow.steps().len(),
-            Screen::Start(_) => 0,
-        };
-        self.open = vec![false; rows];
     }
 
     /// Starts the guest's steps for the typed host address, or says why the
@@ -471,6 +492,7 @@ impl App {
             own,
             host,
             refused,
+            folds,
         } = &mut self.screen
         else {
             return;
@@ -484,6 +506,7 @@ impl App {
         };
         *refused = None;
         **flow = GuestFlow::new(*own, self.settings.name.clone(), address);
+        *folds = Folds::closed(flow.steps().len());
         let actions = flow.apply(GuestInput::Click(Click::Connect), Instant::now());
         self.settings.host = Some(address);
         self.save();
@@ -500,6 +523,7 @@ impl App {
                 flow,
                 host,
                 refused,
+                folds,
                 ..
             } => {
                 let busy = flow.busy();
@@ -524,16 +548,16 @@ impl App {
                     });
                     theme::section(ui, "Setup");
                     let done = flow.setup_done();
-                    self.setup_open &= done;
+                    folds.setup &= done;
                     let rows =
-                        row::setup(ui, flow.steps(), &mut self.open, done, &mut self.setup_open);
+                        row::setup(ui, flow.steps(), &mut folds.rows, done, &mut folds.setup);
                     input.click = exit.or(banner).or(rows);
                     if enter && !busy {
                         input.click = Some(Click::Connect);
                     }
                 });
             }
-            Screen::Host { flow } => {
+            Screen::Host { flow, folds } => {
                 input.back = header(ui, &flow.title(), flow.stay());
                 let exit = footer(ui, &flow.exit(), errors);
                 if flow.busy() {
@@ -543,9 +567,9 @@ impl App {
                     let banner = banner::show(ui, &flow.banner(), |_| {});
                     theme::section(ui, "Setup");
                     let done = flow.setup_done();
-                    self.setup_open &= done;
+                    folds.setup &= done;
                     let rows =
-                        row::setup(ui, flow.steps(), &mut self.open, done, &mut self.setup_open);
+                        row::setup(ui, flow.steps(), &mut folds.rows, done, &mut folds.setup);
                     let session = flow.session().and_then(|view| session::show(ui, &view));
                     input.click = exit.or(banner).or(rows).or(session);
                 });
@@ -690,12 +714,23 @@ impl eframe::App for App {
             // Connect reads the typed address before the steps start.
             Some(Click::Connect) => self.connect(&ctx),
             Some(Click::CopyAddress) => {
-                if let Screen::Host { flow } = &self.screen {
+                if let Screen::Host { flow, .. } = &self.screen {
                     ctx.copy_text(flow.own().to_string());
                 }
             }
             Some(click) => {
                 let now = Instant::now();
+                // A run that starts or stops leaves the setup card closed.
+                let restarts = matches!(click, Click::StartServer | Click::RestoreHosts);
+                match &mut self.screen {
+                    Screen::Guest { flow, folds, .. } if restarts => {
+                        *folds = Folds::closed(flow.steps().len());
+                    }
+                    Screen::Host { flow, folds } if restarts => {
+                        *folds = Folds::closed(flow.steps().len());
+                    }
+                    _ => {}
+                }
                 match &mut self.screen {
                     Screen::Guest { flow, .. } => {
                         let actions = flow.apply(GuestInput::Click(click), now);
