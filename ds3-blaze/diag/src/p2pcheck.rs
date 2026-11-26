@@ -38,14 +38,10 @@ struct Tally {
     strangers: Vec<SocketAddr>,
 }
 
-/// Prints the network check for `peer`, then exchanges pings with it on UDP
-/// `port` for up to `seconds` seconds and prints the result; fails when the
-/// port cannot be bound or a direction does not work.
+/// Exchanges pings with `peer` on UDP `port` for up to `seconds` seconds and
+/// prints the result; fails when the port cannot be bound or a direction does
+/// not work.
 pub async fn run(peer: Ipv4Addr, port: u16, seconds: u64) -> std::io::Result<()> {
-    if let Err(err) = crate::netcheck::diagnose(peer) {
-        println!("network check failed to run: {err}");
-    }
-    println!();
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port))
         .await
         .map_err(|err| {

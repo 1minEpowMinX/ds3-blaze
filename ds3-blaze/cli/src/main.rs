@@ -13,7 +13,8 @@ use ds3_blaze_core::hosts::{self, Action, State};
 use ds3_blaze_core::log;
 use ds3_blaze_core::players::Roster;
 use ds3_blaze_core::server::{self, DEFAULT_BLAZE_PORT, Server};
-use ds3_blaze_diag::{netcheck, p2pcheck};
+use ds3_blaze_diag::netcheck::{self, Finding, Own, Setup, Severity};
+use ds3_blaze_diag::p2pcheck;
 
 use std::io;
 use std::net::Ipv4Addr;
@@ -39,13 +40,17 @@ enum Command {
     /// server.
     #[command(subcommand)]
     Hosts(HostsCommand),
-    /// Shows the adapter traffic to the peer takes, other VPN adapters, the
-    /// network profile and the Windows Firewall rules for the game and this
-    /// server.
+    /// Shows this PC's VPN adapter, other VPN adapters, the network profile,
+    /// the Windows Firewall rules for the game and this server, and the adapter
+    /// traffic to the peer takes.
     NetCheck {
         /// The other player's VPN address.
         #[arg(long, value_name = "IP")]
         peer: Ipv4Addr,
+        /// This PC's VPN address; without it any adapter that looks like a VPN
+        /// counts as this PC's.
+        #[arg(long, value_name = "IP")]
+        address: Option<Ipv4Addr>,
     },
     /// Runs net-check, then exchanges UDP pings with the other player; run it
     /// on both PCs at once.
@@ -248,11 +253,47 @@ fn hosts(command: HostsCommand) -> io::Result<()> {
     Ok(())
 }
 
-/// Runs net-check against `peer` and fails when it finds a problem.
-fn net_check(peer: Ipv4Addr) -> io::Result<()> {
-    match netcheck::diagnose(peer)?.problems {
+/// Prints the local and route findings for traffic to `peer` from the adapter
+/// holding `address`, or from any VPN adapter without one, and fails when a
+/// finding is a problem.
+fn net_check(peer: Ipv4Addr, address: Option<Ipv4Addr>) -> io::Result<()> {
+    println!("network check for {peer} (reading Windows settings, a few seconds)");
+    let records = netcheck::read(Some(peer))?;
+    let own = address.map_or(Own::AnyVpn, Own::Address);
+    let setup = Setup {
+        own,
+        // This executable runs `serve`, so its rules are the server's.
+        server: std::env::current_exe().ok(),
+    };
+    println!("this PC:");
+    let mut findings = netcheck::local(&records, &setup);
+    print_findings(&findings);
+    println!("route to {peer}:");
+    let route = netcheck::route(&records, peer, &own, netcheck::source_ip(peer));
+    print_findings(&route);
+    findings.extend(route);
+    let count = |severity| findings.iter().filter(|f| f.severity == severity).count();
+    let problems = count(Severity::Problem);
+    println!(
+        "network check: {problems} problem(s), {} warning(s)",
+        count(Severity::Warning)
+    );
+    match problems {
         0 => Ok(()),
         n => Err(io::Error::other(format!("{n} problem(s) found"))),
+    }
+}
+
+/// Prints each finding on a line of its own, marked with its severity.
+fn print_findings(findings: &[Finding]) {
+    for finding in findings {
+        let mark = match finding.severity {
+            Severity::Ok => "ok",
+            Severity::Note => "note",
+            Severity::Warning => "warning",
+            Severity::Problem => "problem",
+        };
+        println!("  [{mark}] {}", finding.text);
     }
 }
 
@@ -302,8 +343,16 @@ async fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Serve(args) => printing_log(serve(args)).await,
         Command::Hosts(command) => hosts(command),
-        Command::NetCheck { peer } => net_check(peer),
-        Command::P2pCheck(args) => p2pcheck::run(args.peer, args.port, args.seconds).await,
+        Command::NetCheck { peer, address } => net_check(peer, address),
+        Command::P2pCheck(args) => {
+            // Problems the check finds do not stop the exchange, which shows
+            // their effect.
+            if let Err(err) = net_check(args.peer, None) {
+                println!("{err}");
+            }
+            println!();
+            p2pcheck::run(args.peer, args.port, args.seconds).await
+        }
         #[cfg(feature = "research")]
         Command::Proxy(args) => printing_log(run_proxy(args.ea_redirector)).await,
         #[cfg(feature = "research")]
