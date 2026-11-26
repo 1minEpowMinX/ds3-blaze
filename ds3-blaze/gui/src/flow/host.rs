@@ -199,6 +199,19 @@ impl HostFlow {
         flow
     }
 
+    /// Returns every step to waiting and forgets the guest and what the
+    /// checks found, as before the first start.
+    fn reset(&mut self, now: Instant) {
+        self.steps = WAITING.iter().map(|waiting| Step::new(waiting)).collect();
+        self.trigger = Trigger::default();
+        self.guest = None;
+        self.local.clear();
+        self.route.clear();
+        self.fix_error = None;
+        self.link = Link::default();
+        self.draw_link(now);
+    }
+
     /// Returns this PC's VPN address.
     pub fn own(&self) -> Ipv4Addr {
         self.own
@@ -442,7 +455,7 @@ impl HostFlow {
                 self.draw_link(now);
                 Vec::new()
             }
-            HostInput::Hosts(state) => self.hosts(state),
+            HostInput::Hosts(state) => self.hosts(state, now),
             HostInput::Elevated(result) => self.elevated(result, now),
             HostInput::Started(result) => self.started(result),
             HostInput::SelfReach(reports) => {
@@ -580,7 +593,7 @@ impl HostFlow {
         vec![HostAction::ReadHosts]
     }
 
-    fn hosts(&mut self, state: io::Result<State>) -> Vec<HostAction> {
+    fn hosts(&mut self, state: io::Result<State>, now: Instant) -> Vec<HostAction> {
         let text = match &state {
             Ok(state) => state.to_string(),
             Err(err) => format!("the hosts file cannot be read: {err}"),
@@ -591,18 +604,15 @@ impl HostFlow {
             Detail::Text(format!("backup: {}", hosts::backup_path().display())),
         ];
         if std::mem::take(&mut self.restoring) {
-            let restored = matches!(state, Ok(State::EaServers));
             let error = self.elevation_error.take();
-            step.status = if restored {
-                Status::Waiting
-            } else {
-                Status::Failed
-            };
-            step.summary = match error {
-                Some(error) if !restored => checks::sentence(&error),
-                _ if restored => WAITING[HOSTS].into(),
-                _ => checks::sentence(&text),
-            };
+            if matches!(state, Ok(State::EaServers)) {
+                self.reset(now);
+                return Vec::new();
+            }
+            // A failed restore leaves the game going to ds3-blaze, so what the
+            // run found still holds.
+            step.status = Status::Failed;
+            step.summary = checks::sentence(&error.unwrap_or(text));
             return Vec::new();
         }
         if !self.starting {
@@ -1288,7 +1298,23 @@ mod tests {
             [HostAction::ReadHosts]
         );
         flow.apply(HostInput::Hosts(Ok(State::EaServers)), now);
-        assert_eq!(flow.steps()[HOSTS].status, Status::Waiting);
+        let mut fresh = self::flow();
+        fresh.apply(HostInput::Tick, now);
+        assert_eq!(flow.steps(), fresh.steps(), "every step waits again");
         assert!(!flow.busy());
+    }
+
+    #[test]
+    fn a_failed_restore_keeps_what_the_run_found() {
+        let mut flow = flow();
+        let now = Instant::now();
+        flow.apply(HostInput::Started(Ok(Ports::default())), now);
+        flow.apply(HostInput::Click(Click::RestoreHosts), now);
+        flow.apply(HostInput::Elevated(Ok(0)), now);
+        flow.apply(
+            HostInput::Hosts(Ok(State::Redirected(Ipv4Addr::LOCALHOST))),
+            now,
+        );
+        assert_eq!(flow.steps()[HOSTS].status, Status::Failed);
     }
 }

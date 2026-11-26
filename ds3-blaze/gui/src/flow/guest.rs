@@ -287,7 +287,7 @@ impl GuestFlow {
         match input {
             GuestInput::Click(click) => self.click(click, now),
             GuestInput::Network(network) => self.network(network, now),
-            GuestInput::Hosts(state) => self.hosts(state),
+            GuestInput::Hosts(state) => self.hosts(state, now),
             GuestInput::Elevated(result) => self.elevated(result, now),
             GuestInput::Reach(reports) => self.reach(&reports, now),
             GuestInput::Progress(progress) => {
@@ -391,7 +391,7 @@ impl GuestFlow {
         vec![GuestAction::ReadHosts]
     }
 
-    fn hosts(&mut self, state: io::Result<State>) -> Vec<GuestAction> {
+    fn hosts(&mut self, state: io::Result<State>, now: Instant) -> Vec<GuestAction> {
         let text = match &state {
             Ok(state) => state.to_string(),
             Err(err) => format!("the hosts file cannot be read: {err}"),
@@ -402,18 +402,15 @@ impl GuestFlow {
             Detail::Text(format!("backup: {}", hosts::backup_path().display())),
         ];
         if std::mem::take(&mut self.restoring) {
-            let restored = matches!(state, Ok(State::EaServers));
             let error = self.elevation_error.take();
-            step.status = if restored {
-                Status::Waiting
-            } else {
-                Status::Failed
-            };
-            step.summary = match error {
-                Some(error) if !restored => checks::sentence(&error),
-                _ if restored => WAITING[HOSTS].into(),
-                _ => checks::sentence(&text),
-            };
+            if matches!(state, Ok(State::EaServers)) {
+                self.reset(now);
+                return Vec::new();
+            }
+            // A failed restore leaves the game going to ds3-blaze, so what the
+            // run found still holds.
+            step.status = Status::Failed;
+            step.summary = checks::sentence(&error.unwrap_or(text));
             return Vec::new();
         }
         match state {
@@ -545,6 +542,13 @@ mod tests {
 
     fn flow() -> GuestFlow {
         GuestFlow::new(OWN, "Carver".into(), HOST)
+    }
+
+    /// Returns a fresh flow whose link was drawn at `now`.
+    fn flow_at(now: Instant) -> GuestFlow {
+        let mut flow = flow();
+        flow.apply(GuestInput::Tick, now);
+        flow
     }
 
     #[test]
@@ -1075,10 +1079,19 @@ mod tests {
             flow.apply(GuestInput::Hosts(Ok(State::EaServers)), now)
                 .is_empty()
         );
-        assert_eq!(flow.steps()[HOSTS].summary, WAITING[HOSTS]);
-        assert_eq!(flow.steps()[HOSTS].status, Status::Waiting);
-        assert_eq!(flow.steps()[LINK].status, Status::Waiting);
+        assert_eq!(flow.steps(), flow_at(now).steps(), "every step waits again");
         assert!(!flow.busy());
+    }
+
+    #[test]
+    fn a_failed_restore_keeps_what_the_connection_found() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        flow.apply(GuestInput::Click(Click::RestoreHosts), now);
+        flow.apply(GuestInput::Elevated(Ok(0)), now);
+        flow.apply(GuestInput::Hosts(Ok(State::Redirected(HOST))), now);
+        assert_eq!(flow.steps()[HOSTS].status, Status::Failed);
+        assert_eq!(flow.steps()[NETWORK].status, Status::Ok);
     }
 
     #[test]
