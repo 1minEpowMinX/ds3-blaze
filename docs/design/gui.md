@@ -122,6 +122,8 @@ The direct link step comes before the game step in both modes because the check 
 
 When the host's game is already running as the guest connects, the host's run cannot bind the port and the guest's pings go unanswered. The guest's row then says that a host whose game is running closes it, and both press "Check again".
 
+The GUI does not block the game from starting during a check. A passing run ends `LINGER` after both directions work, so the window is a few seconds, and the ways to block a launch (an `Image File Execution Options` debugger entry, or ending the game's process) need administrator rights, look like malware to antivirus software, and leave the game unable to start if the window crashes. How the game behaves when it starts while a check holds `GAME_PORT` has not been observed; a check in game decides whether the row's warning needs to be stronger.
+
 ### Elevation
 
 Writing the hosts file and applying fixes need administrator rights; the GUI itself runs without them, so the server never runs elevated. The GUI starts `ds3-blaze-cli.exe` next to itself through `ShellExecuteExW` with the verb `runas` (one UAC prompt per action), waits for it, and then checks the outcome by reading the state again: the hosts state needs no rights, and the network findings come from the local check.
