@@ -6,10 +6,23 @@ use crate::p2p::GAME_PORT;
 use crate::powershell::{self, ACCESS_DENIED};
 use std::io;
 
-/// Display name of the rule [`Fix::GameRule`] adds.
-pub const GAME_RULE_NAME: &str = "ds3-blaze: Dead Space 3 P2P";
-/// Display name of the rule [`Fix::ServerRule`] adds.
-pub const SERVER_RULE_NAME: &str = "ds3-blaze: server";
+/// Returns the display name of the firewall rule `fix` adds, or `None` when it
+/// adds none.
+///
+/// Every name reads `ds3-blaze: allow <what the rule opens> (<what for>)`, so
+/// the rules sort together in the firewall's list: the game's port for the
+/// game rule, the program's file name for the server rule.
+pub fn rule_name(fix: &Fix) -> Option<String> {
+    let (opens, purpose) = match fix {
+        Fix::GameRule => (format!("UDP {GAME_PORT}"), "game P2P"),
+        Fix::ServerRule(program) => {
+            let file = program.file_name().unwrap_or(program.as_os_str());
+            (file.to_string_lossy().into_owned(), "server")
+        }
+        Fix::PrivateProfile(_) => return None,
+    };
+    Some(format!("ds3-blaze: allow {opens} ({purpose})"))
+}
 
 /// Returns the PowerShell script that carries out `fix`.
 ///
@@ -17,15 +30,13 @@ pub const SERVER_RULE_NAME: &str = "ds3-blaze: server";
 /// stops at the first error. A rule is added after removing any rule of the
 /// same name, so running the script twice leaves one rule.
 pub fn script(fix: &Fix) -> String {
+    let name = rule_name(fix).unwrap_or_default();
     let change = match fix {
         // The game's own path differs between installs, so the rule opens the
         // port rather than naming the executable.
-        Fix::GameRule => replace_rule(
-            GAME_RULE_NAME,
-            &format!("-Protocol UDP -LocalPort {GAME_PORT}"),
-        ),
+        Fix::GameRule => replace_rule(&name, &format!("-Protocol UDP -LocalPort {GAME_PORT}")),
         Fix::ServerRule(program) => replace_rule(
-            SERVER_RULE_NAME,
+            &name,
             &format!("-Program {}", quoted(&program.display().to_string())),
         ),
         Fix::PrivateProfile(address) => format!(
@@ -75,11 +86,24 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn rule_names_share_one_pattern() {
+        assert_eq!(
+            rule_name(&Fix::GameRule),
+            Some(format!("ds3-blaze: allow UDP {GAME_PORT} (game P2P)"))
+        );
+        assert_eq!(
+            rule_name(&Fix::ServerRule(PathBuf::from(r"C:\Games\ds3-blaze.exe"))),
+            Some("ds3-blaze: allow ds3-blaze.exe (server)".into())
+        );
+        assert_eq!(rule_name(&Fix::PrivateProfile(Ipv4Addr::LOCALHOST)), None);
+    }
+
+    #[test]
     fn game_rule_opens_the_game_port() {
         let script = script(&Fix::GameRule);
-        assert!(script.contains(&format!(
-            "Remove-NetFirewallRule -DisplayName '{GAME_RULE_NAME}'"
-        )));
+        let name = rule_name(&Fix::GameRule).expect("a rule");
+        assert!(script.contains(&format!("Remove-NetFirewallRule -DisplayName '{name}'")));
+        assert!(script.contains(&format!("New-NetFirewallRule -DisplayName '{name}'")));
         assert!(script.contains(&format!("-Protocol UDP -LocalPort {GAME_PORT}")));
         assert!(script.contains("-Direction Inbound -Action Allow -Profile Any"));
     }
@@ -90,7 +114,7 @@ mod tests {
             r"C:\Games\O'Brien's\ds3-blaze.exe",
         )));
         assert!(script.contains(r"-Program 'C:\Games\O''Brien''s\ds3-blaze.exe'"));
-        assert!(script.contains(&format!("-DisplayName '{SERVER_RULE_NAME}'")));
+        assert!(script.contains("-DisplayName 'ds3-blaze: allow ds3-blaze.exe (server)'"));
     }
 
     #[test]
