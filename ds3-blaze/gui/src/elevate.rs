@@ -16,7 +16,7 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 /// File name of the command line's executable, beside the window's.
-pub const CLI_EXE: &str = "ds3-blaze.exe";
+pub const CLI_EXE: &str = "ds3-blaze-cli.exe";
 
 /// Returns the path of [`CLI_EXE`] beside the running executable.
 pub fn cli_path() -> PathBuf {
@@ -175,6 +175,17 @@ mod tests {
 
     fn line(args: &[&str]) -> String {
         command_line(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn the_command_line_is_built_under_this_name() {
+        let manifest: toml::Table =
+            toml::from_str(include_str!("../../cli/Cargo.toml")).expect("the manifest parses");
+        let bin = &manifest["bin"].as_array().expect("a [[bin]] table")[0];
+        assert_eq!(
+            format!("{}.exe", bin["name"].as_str().expect("a name")),
+            CLI_EXE
+        );
     }
 
     #[test]

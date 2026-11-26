@@ -19,28 +19,28 @@ Protocol analysis, traffic captures and the work plan: [docs/](docs/README.md).
 
 ## Getting it
 
-Release archives are on the repository's Releases page. Each holds `ds3-blaze.exe`, this README and the license; the commands below run from the unpacked folder.
+Release archives are on the repository's Releases page. Each holds `ds3-blaze.exe`, the window that walks both players through hosting and joining, `ds3-blaze-cli.exe`, the command line, this README and the license; the commands below run from the unpacked folder.
 
-GitHub Actions builds every release archive and signs a build provenance attestation for it and for the `ds3-blaze.exe` inside. With the [GitHub CLI](https://cli.github.com/) installed, either file can be checked against this repository's release workflow; the command fails for a file that workflow did not produce:
+GitHub Actions builds every release archive and signs a build provenance attestation for it and for both executables inside. With the [GitHub CLI](https://cli.github.com/) installed, either file can be checked against this repository's release workflow; the command fails for a file that workflow did not produce:
 
 ```powershell
-gh attestation verify <archive or ds3-blaze.exe> --repo 1minEpowMinX/ds3-blaze --signer-workflow 1minEpowMinX/ds3-blaze/.github/workflows/release.yml
+gh attestation verify <archive or executable> --repo 1minEpowMinX/ds3-blaze --signer-workflow 1minEpowMinX/ds3-blaze/.github/workflows/release.yml
 ```
 
-To build from source instead, install stable Rust on Windows (`net-check` reads the network settings through PowerShell) and run `tools\package.ps1`. It builds the release binary and writes the same archive to `dist\`.
+To build from source instead, install stable Rust on Windows (`net-check` reads the network settings through PowerShell) and run `tools\package.ps1`. It builds the release binaries and writes the same archive to `dist\`.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\package.ps1
 ```
 
-`.\ds3-blaze.exe --help` lists the commands, and `.\ds3-blaze.exe <command> --help` the options of one.
+`.\ds3-blaze-cli.exe --help` lists the commands, and `.\ds3-blaze-cli.exe <command> --help` the options of one.
 
 ## Running
 
 Both players join the same Radmin VPN network, and both run the network check at the same time, each with the other PC's VPN address:
 
 ```powershell
-.\ds3-blaze.exe p2p-check --peer <other PC's VPN address>
+.\ds3-blaze-cli.exe p2p-check --peer <other PC's VPN address>
 ```
 
 Each Windows setting the check finds wrong comes with the `fix` command that changes it. [docs/guides/network-checks.md](docs/guides/network-checks.md) describes every check.
@@ -54,7 +54,7 @@ The server runs on the host's PC.
 1. Start the server on all interfaces with your VPN address. `--player` names the guest; without it the guest shows up as `Player-<last octet of the guest's address>`:
 
    ```powershell
-   .\ds3-blaze.exe serve --bind 0.0.0.0 --advertise <host's VPN address> --name <host's name> --player <guest's VPN address>=<guest's name>
+   .\ds3-blaze-cli.exe serve --bind 0.0.0.0 --advertise <host's VPN address> --name <host's name> --player <guest's VPN address>=<guest's name>
    ```
 
    On a VPN network open to strangers, add `--only-listed`: the server then accepts only your own PC and the `--player` addresses.
@@ -62,7 +62,7 @@ The server runs on the host's PC.
 2. Point `gosredirector.ea.com` at your own PC from a PowerShell run as administrator, in the same folder:
 
    ```powershell
-   .\ds3-blaze.exe hosts enable
+   .\ds3-blaze-cli.exe hosts enable
    ```
 
 3. Start the game, go online in co-op and create a game. A **public** game takes the guest through quick match; a private one takes invites only, so invite the guest through the EA App from inside it.
@@ -74,7 +74,7 @@ If the guest does not get in, the `logs\` folder shows how far the server got. T
 1. Point `gosredirector.ea.com` at the host from a PowerShell run as administrator, in the unpacked folder:
 
    ```powershell
-   .\ds3-blaze.exe hosts enable --address <host's VPN address>
+   .\ds3-blaze-cli.exe hosts enable --address <host's VPN address>
    ```
 
 2. Start the game and go online in co-op. Then either:
@@ -85,7 +85,7 @@ If the guest does not get in, the `logs\` folder shows how far the server got. T
 If the game cannot get in, check every connection it makes to the host's server while the server runs:
 
 ```powershell
-.\ds3-blaze.exe reach --host <host's VPN address>
+.\ds3-blaze-cli.exe reach --host <host's VPN address>
 ```
 
 It prints one line per stage (the hosts entry, the redirector, the Blaze server, QoS) and says what is wrong with each one that fails.
@@ -95,10 +95,10 @@ It prints one line per stage (the hosts entry, the redirector, the Blaze server,
 Both players go back to the EA servers from a PowerShell run as administrator:
 
 ```powershell
-.\ds3-blaze.exe hosts disable
+.\ds3-blaze-cli.exe hosts disable
 ```
 
-`.\ds3-blaze.exe hosts status` tells which servers the game reaches, and needs no administrator rights. Each `enable` and `disable` first saves the hosts file as it was, minus any ds3-blaze entries, to `hosts.ds3-blaze.bak` beside it; restoring that copy also returns to the EA servers.
+`.\ds3-blaze-cli.exe hosts status` tells which servers the game reaches, and needs no administrator rights. Each `enable` and `disable` first saves the hosts file as it was, minus any ds3-blaze entries, to `hosts.ds3-blaze.bak` beside it; restoring that copy also returns to the EA servers.
 
 ## Logs and privacy
 

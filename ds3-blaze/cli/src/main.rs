@@ -592,10 +592,10 @@ mod tests {
 
     #[test]
     fn fix_commands_run_as_printed() {
-        let exe = std::path::Path::new(r"C:\My Games\ds3-blaze.exe");
+        let exe = std::path::Path::new(r"C:\My Games\ds3-blaze-cli.exe");
         assert_eq!(
-            fix_command_from(&Fix::GameRule, r".\ds3-blaze.exe", Some(exe)),
-            r".\ds3-blaze.exe fix game-rule"
+            fix_command_from(&Fix::GameRule, r".\ds3-blaze-cli.exe", Some(exe)),
+            r".\ds3-blaze-cli.exe fix game-rule"
         );
         assert_eq!(
             fix_command_from(
@@ -603,7 +603,7 @@ mod tests {
                 &exe.display().to_string(),
                 Some(exe)
             ),
-            r#"& "C:\My Games\ds3-blaze.exe" fix server-rule"#
+            r#"& "C:\My Games\ds3-blaze-cli.exe" fix server-rule"#
         );
         assert_eq!(
             fix_command_from(

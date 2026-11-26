@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-Builds ds3-blaze in release mode and packs the files a player needs into a zip.
+Builds ds3-blaze in release mode and packs the files a player needs into a zip:
+the window, the command line, the README and the license.
 
 .DESCRIPTION
 The archive holds the files listed in $entries, laid out so that the commands
@@ -16,7 +17,7 @@ mismatch. Omitted, the version is not checked.
 Directory the archive is written to. Defaults to dist\ in the repository root.
 
 .PARAMETER SkipBuild
-Packs the existing release executable without running cargo.
+Packs the existing release executables without running cargo.
 
 .OUTPUTS
 The full path of the archive.
@@ -36,13 +37,18 @@ $Manifest = Join-Path $Root 'ds3-blaze\Cargo.toml'
 if (-not $OutDir) { $OutDir = Join-Path $Root 'dist' }
 
 # cargo owns the names, version and target directory; nothing here repeats them
-# except the package that builds the players' executable.
+# except the packages that build the players' executables.
 $metadata = cargo metadata --no-deps --format-version 1 --manifest-path $Manifest | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
-$package = $metadata.packages | Where-Object name -eq 'ds3-blaze-cli'
-if (-not $package) { throw 'package ds3-blaze-cli not found in the workspace' }
-$bin = ($package.targets | Where-Object { $_.kind -contains 'bin' }).name
-$version = $package.version
+function Get-BinName([string]$PackageName) {
+    $package = $metadata.packages | Where-Object name -eq $PackageName
+    if (-not $package) { throw "package $PackageName not found in the workspace" }
+    ($package.targets | Where-Object { $_.kind -contains 'bin' }).name
+}
+# The archive is named after the window, the executable players open.
+$window = Get-BinName 'ds3-blaze-gui'
+$cli = Get-BinName 'ds3-blaze-cli'
+$version = ($metadata.packages | Where-Object name -eq 'ds3-blaze-gui').version
 if ($Tag -and $Tag -ne "v$version") {
     throw "tag $Tag does not match crate version $version (expected v$version)"
 }
@@ -52,16 +58,16 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 }
 
-$exe = Join-Path $metadata.target_directory "release\$bin.exe"
-if (-not (Test-Path $exe)) { throw "$exe not found; build without -SkipBuild" }
-
-$entries = [ordered]@{
-    "$bin.exe"             = $exe
-    'README.md'            = Join-Path $Root 'README.md'
-    'LICENSE'              = Join-Path $Root 'LICENSE'
+$entries = [ordered]@{}
+foreach ($bin in $window, $cli) {
+    $exe = Join-Path $metadata.target_directory "release\$bin.exe"
+    if (-not (Test-Path $exe)) { throw "$exe not found; build without -SkipBuild" }
+    $entries["$bin.exe"] = $exe
 }
+$entries['README.md'] = Join-Path $Root 'README.md'
+$entries['LICENSE'] = Join-Path $Root 'LICENSE'
 
-$name = "$bin-$version-windows-x64"
+$name = "$window-$version-windows-x64"
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $archive = Join-Path (Resolve-Path $OutDir).Path "$name.zip"
 if (Test-Path $archive) { Remove-Item -Force $archive }

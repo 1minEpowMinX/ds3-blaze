@@ -6,10 +6,10 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# Players, the README, CI and the release workflow know the executable by this
-# name; the GUI takes it over in stage 6 of docs/plans/2026-11-26-gui.md.
+# The window starts this executable by name for elevated commands
+# (gui::elevate::CLI_EXE); its test reads the name from here.
 [[bin]]
-name = "ds3-blaze"
+name = "ds3-blaze-cli"
 path = "src/main.rs"
 
 [features]

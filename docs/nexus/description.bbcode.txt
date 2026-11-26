@@ -32,32 +32,32 @@ Tested over Radmin VPN between two PCs thousands of kilometers apart, on differe
 Both players extract the archive to any folder; it does not go into the game folder. Open PowerShell in that folder (in Explorer: right-click the empty space in the folder > [i]Open in Terminal[/i]). [b]Back up your saves before the first session.[/b]
 
 Both players first check the connection between the two PCs, at the same time, each with the other's VPN address:
-[code].\ds3-blaze.exe p2p-check --peer <friend's VPN address>[/code]
+[code].\ds3-blaze-cli.exe p2p-check --peer <friend's VPN address>[/code]
 [b]Host[/b]
 [list=1]
 [*]Start the server and leave its window open:
-[code].\ds3-blaze.exe serve --bind 0.0.0.0 --advertise <your VPN address> --name <your name> --player <friend's VPN address>=<friend's name>[/code][/*]
+[code].\ds3-blaze-cli.exe serve --bind 0.0.0.0 --advertise <your VPN address> --name <your name> --player <friend's VPN address>=<friend's name>[/code][/*]
 [*]In a PowerShell window run as administrator, in the same folder:
-[code].\ds3-blaze.exe hosts enable[/code][/*]
+[code].\ds3-blaze-cli.exe hosts enable[/code][/*]
 [*]Start the game, go online in co-op and create a game. A [b]public[/b] game lets your friend in through Quick Match; a [b]private[/b] one takes invites only, so invite them through the EA App.[/*]
 [/list]
 [b]Guest[/b]
 [list=1]
 [*]In a PowerShell window run as administrator, in the archive folder:
-[code].\ds3-blaze.exe hosts enable --address <host's VPN address>[/code][/*]
+[code].\ds3-blaze-cli.exe hosts enable --address <host's VPN address>[/code][/*]
 [*]Start the game, go online in co-op, and either pick Quick Match or accept the host's invite in the EA App. Quick Match keeps searching for a while, so you may start it a little before the host's game is up.[/*]
 [/list]
 The README inside the archive covers every command and option.
 
 [size=6][b]Going back to EA's servers[/b][/size]
 Both players run, as administrator:
-[code].\ds3-blaze.exe hosts disable[/code]
+[code].\ds3-blaze-cli.exe hosts disable[/code]
 Then the folder can be deleted. While the entry is in place, that PC reaches only the ds3-blaze server, not EA's.
 
 [size=6][b]Troubleshooting[/b][/size]
 [list]
 [*][b]p2p-check[/b] shows in which direction packets do not arrive, and why: the wrong network adapter, a VPN network that Windows files as [i]Public[/i] (where inbound traffic is blocked), or a firewall rule. Fix what it reports and run it again on both PCs.[/*]
-[*]If Windows asks whether to let [i]ds3-blaze.exe[/i] through the firewall, allow it.[/*]
+[*]If Windows asks whether to let [i]ds3-blaze-cli.exe[/i] through the firewall, allow it.[/*]
 [*]The server writes a log to the [i]logs[/i] folder next to it, showing how far each player got. Logs contain friend lists and IP addresses: if you attach one to a bug report, send it privately rather than posting it.[/*]
 [/list]
 [size=6][b]Known limitations[/b][/size]

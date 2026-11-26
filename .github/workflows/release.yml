@@ -51,7 +51,7 @@ jobs:
         with:
           subject-path: |
             dist/*.zip
-            ds3-blaze/target/release/ds3-blaze.exe
+            ds3-blaze/target/release/*.exe
       - name: Render the notes
         id: cliff
         uses: orhun/git-cliff-action@v4
