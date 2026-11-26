@@ -9,7 +9,7 @@
 | 2. Login | Done on 2026-11-24 (see "Login" in [protocol.md](../research/protocol.md)): `preAuth` → `originLogin` → `postAuth` go through, the game enters the online co-op menu and reaches `createGame` | The co-op menu item opens without a connection error |
 | 3. Game session | Host: done on 2026-11-24 (see "Check on the emulator" in [protocol.md](../research/protocol.md)); the room is created, the game runs, quitting with a save is clean. Guest: joining a public room through quick match works in game over VPN on 2026-11-25 (see "Second player" in [protocol.md](../research/protocol.md)). An EA App invite into a private room also works in game (2026-11-25) | Both players in one session, P2P UDP visible between 26.x addresses |
 | 4. Stabilization | Handling disconnects, reconnecting, returning to the menu cleanly. Done: a guest whose mesh link does not come up within `JOIN_TIMEOUT` (`blaze.rs`) is removed with `PLAYER_JOIN_TIMEOUT`, so a failed join no longer keeps the room full; a session silent for `IDLE_TIMEOUT` (`blaze.rs`), as after a dropped VPN link, is closed and its player leaves the game | Several chapters in a row without drops |
-| 5. Convenience | One-click start: emulator + `hosts` edit + firewall rules | The second player is set up in a minute |
+| 5. Convenience | One-click start: emulator + `hosts` edit + firewall rules. Designed in [gui.md](gui.md) | The second player is set up in a minute |
 
 Stages 1–3 are done with our own server, built on the message layouts of Pocket Relay Server and the definitions from Aim4kill/BlazeSDK (see [architecture.md](architecture.md)).
 
