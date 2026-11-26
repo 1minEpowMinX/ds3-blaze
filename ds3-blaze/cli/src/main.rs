@@ -234,26 +234,10 @@ async fn serve(args: ServeArgs) -> io::Result<()> {
 
 /// Returns what `state` means for the game, or its problem as an error.
 fn describe(state: State) -> io::Result<String> {
-    Ok(match state {
-        State::EaServers => "the game reaches the EA servers".into(),
-        State::Redirected(address) => {
-            format!("the game reaches the ds3-blaze server at {address}")
-        }
-        State::Overridden { entry, ours } => {
-            let instead = match ours {
-                Some(ours) => format!("the ds3-blaze server at {ours}"),
-                None => "the EA servers".into(),
-            };
-            format!(
-                "line {} of {}, \"{}\", sends the game to {} instead of {instead}; remove that line",
-                entry.line,
-                hosts::path().display(),
-                entry.text,
-                entry.address
-            )
-        }
-        State::Broken(problem) => return Err(io::Error::other(problem)),
-    })
+    match state {
+        State::Broken(problem) => Err(io::Error::other(problem)),
+        state => Ok(state.to_string()),
+    }
 }
 
 /// Runs a `hosts` subcommand.

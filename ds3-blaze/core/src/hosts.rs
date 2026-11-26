@@ -59,6 +59,35 @@ pub enum State {
     Broken(Problem),
 }
 
+impl fmt::Display for State {
+    /// Writes what the state means for the game, and for an entry that
+    /// overrides ds3-blaze's, which line of [`path`] to remove.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EaServers => f.write_str("the game reaches the EA servers"),
+            Self::Redirected(address) => {
+                write!(f, "the game reaches the ds3-blaze server at {address}")
+            }
+            Self::Overridden { entry, ours } => {
+                let instead = match ours {
+                    Some(ours) => format!("the ds3-blaze server at {ours}"),
+                    None => "the EA servers".into(),
+                };
+                write!(
+                    f,
+                    "line {} of {}, \"{}\", sends the game to {} instead of {instead}; \
+                     remove that line",
+                    entry.line,
+                    path().display(),
+                    entry.text,
+                    entry.address
+                )
+            }
+            Self::Broken(problem) => problem.fmt(f),
+        }
+    }
+}
+
 /// A line of the hosts file that maps a name in [`REDIRECTED`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
