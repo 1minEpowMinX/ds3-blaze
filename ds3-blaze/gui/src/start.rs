@@ -1,11 +1,13 @@
-//! The start screen: the player's name and VPN address, the hosts state and
-//! the choice of mode.
+//! The start screen: the player's name and VPN address, chosen once for
+//! both modes, and the choice of mode.
 
+use crate::row::{self, ORANGE, RED};
 use crate::settings::Mode;
+use crate::step::{BUSY, Button, Click};
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_core::players::check_nickname;
 use ds3_blaze_core::vpn::{self, Adapter};
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, CursorIcon, Margin, RichText, Sense};
 use std::net::Ipv4Addr;
 
 /// Returns whether the hosts file holds ds3-blaze entries.
@@ -33,6 +35,11 @@ pub struct Form {
     pub adapters: Vec<Adapter>,
     /// The hosts state, or the error of reading the hosts file.
     pub hosts: Result<State, String>,
+    /// Whether the list of addresses is open.
+    pub choosing: bool,
+    /// Whether the list shows the adapters [`Adapter::is_vpn`] does not
+    /// recognise.
+    pub all: bool,
 }
 
 impl Form {
@@ -44,42 +51,68 @@ impl Form {
             address: None,
             adapters: Vec::new(),
             hosts: Err(String::new()),
+            choosing: false,
+            all: false,
         };
         form.refresh();
-        form.address = form
-            .adapters
-            .iter()
-            .flat_map(|adapter| &adapter.ipv4)
-            .find(|ip| !ip.is_loopback())
-            .copied();
         form
     }
 
     /// Reads the adapters and the hosts state again, keeping the chosen
-    /// address only while an adapter still holds it.
+    /// address while an adapter still holds it and taking the first address
+    /// otherwise.
     pub fn refresh(&mut self) {
         self.adapters = vpn::adapters().map(vpn::choices).unwrap_or_default();
         self.hosts = hosts::status().map_err(|err| err.to_string());
-        if let Some(address) = self.address
-            && !self
-                .adapters
-                .iter()
-                .any(|adapter| adapter.ipv4.contains(&address))
-        {
-            self.address = None;
+        if self.holder().is_none() {
+            self.address = addresses(&self.adapters).next().map(|(ip, _)| ip);
         }
     }
 
-    /// Returns what keeps the player from choosing a mode, `None` when nothing
-    /// does.
-    pub fn problem(&self) -> Option<String> {
-        if let Err(reason) = check_nickname(&self.name) {
-            return Some(format!("the name is refused: {reason}"));
+    /// Returns the adapter holding the chosen address.
+    fn holder(&self) -> Option<&Adapter> {
+        let address = self.address?;
+        self.adapters
+            .iter()
+            .find(|adapter| adapter.ipv4.contains(&address))
+    }
+
+    /// Returns the addresses the list offers, each with its adapter: those of
+    /// VPN adapters, and of the adapter holding the chosen address, unless
+    /// `all` shows every adapter's.
+    pub fn shown(&self) -> Vec<(Ipv4Addr, &Adapter)> {
+        let holder = self.holder();
+        addresses(&self.adapters)
+            .filter(|(_, adapter)| {
+                self.all || adapter.is_vpn() || holder.is_some_and(|holder| holder == *adapter)
+            })
+            .collect()
+    }
+
+    /// Returns the first VPN adapter that is up other than the one holding
+    /// the chosen address.
+    pub fn other_vpn(&self) -> Option<&Adapter> {
+        let holder = self.holder();
+        self.adapters.iter().find(|adapter| {
+            adapter.up && adapter.is_vpn() && holder.is_none_or(|holder| holder != *adapter)
+        })
+    }
+
+    /// Returns why the name can't be used, `None` when it can.
+    pub fn name_problem(&self) -> Option<String> {
+        check_nickname(&self.name)
+            .err()
+            .map(|reason| format!("This name can't be used: {reason}"))
+    }
+
+    /// Returns why no address is chosen, `None` once one is.
+    pub fn address_problem(&self) -> Option<String> {
+        if addresses(&self.adapters).next().is_none() {
+            return Some("Connect your VPN first".into());
         }
-        if self.address.is_none() {
-            return Some("choose your VPN address".into());
-        }
-        None
+        self.address
+            .is_none()
+            .then(|| "Choose your VPN address".into())
     }
 
     /// Returns whether the hosts file holds ds3-blaze entries, which on the
@@ -93,81 +126,198 @@ impl Form {
     /// "Restore EA servers" while a restore runs.
     pub fn show(&mut self, ui: &mut egui::Ui, busy: bool) -> Option<StartClick> {
         let mut click = None;
-        ui.heading("ds3-blaze");
         ui.add_space(8.0);
+        ui.label(
+            RichText::new("ds3-blaze")
+                .size(26.0)
+                .color(ui.visuals().strong_text_color()),
+        );
+        ui.label(RichText::new("Dead Space 3 co-op over a VPN").weak());
+        ui.add_space(18.0);
 
-        ui.horizontal(|ui| {
-            ui.label("Your name");
-            ui.text_edit_singleline(&mut self.name);
-        });
-        ui.add_space(8.0);
-
-        ui.label("Your VPN address");
-        if self.adapters.is_empty() {
-            ui.label(
-                RichText::new("no adapter with an IPv4 address is up; connect your VPN")
-                    .color(Color32::GRAY),
-            );
+        caption(ui, "Your name in the game");
+        ui.add(
+            egui::TextEdit::singleline(&mut self.name)
+                .desired_width(280.0)
+                .margin(egui::vec2(8.0, 6.0)),
+        );
+        let name_problem = self.name_problem();
+        if let Some(problem) = &name_problem {
+            ui.label(RichText::new(problem).color(RED));
         }
-        let chosen_adapter = self
-            .address
-            .and_then(|address| self.adapters.iter().position(|a| a.ipv4.contains(&address)));
-        for (index, adapter) in self.adapters.iter().enumerate() {
-            for ip in adapter.ipv4.iter().filter(|ip| !ip.is_loopback()) {
+        ui.add_space(14.0);
+
+        caption(ui, "Your VPN address");
+        let address_problem = self.address_problem();
+        match (&address_problem, self.holder()) {
+            (None, Some(holder)) => {
+                let line = format!(
+                    "{}, {}",
+                    holder.name,
+                    self.address.expect("a holder holds the address")
+                );
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.address, Some(*ip), format!("{ip}"));
-                    ui.label(RichText::new(&adapter.name).color(Color32::GRAY));
-                    if adapter.is_vpn() && chosen_adapter.is_some_and(|chosen| chosen != index) {
-                        ui.label(
-                            RichText::new("another VPN can take over the other player's traffic")
-                                .color(Color32::from_rgb(220, 170, 50)),
-                        );
+                    ui.label(line);
+                    let label = if self.choosing { "Done" } else { "Change" };
+                    if ui.small_button(label).clicked() {
+                        self.choosing = !self.choosing;
+                    }
+                });
+            }
+            (problem, _) => {
+                ui.horizontal(|ui| {
+                    if let Some(problem) = problem {
+                        ui.label(RichText::new(problem).color(ORANGE));
+                    }
+                    if ui.small_button("Read adapters again").clicked() {
+                        self.refresh();
                     }
                 });
             }
         }
-        if ui.small_button("Read adapters again").clicked() {
-            self.refresh();
+        if self.choosing && address_problem.is_none() {
+            self.address_list(ui);
         }
-        ui.add_space(8.0);
-
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Hosts file:");
-            match &self.hosts {
-                Ok(state) => ui.label(state.to_string()),
-                Err(err) => ui.label(RichText::new(err).color(Color32::from_rgb(220, 80, 70))),
-            };
-        });
-        if self.offers_restore()
-            && ui
-                .add_enabled(!busy, egui::Button::new("Restore EA servers"))
-                .clicked()
-        {
-            click = Some(StartClick::RestoreHosts);
+        if let Some(other) = self.other_vpn() {
+            ui.label(
+                RichText::new(format!(
+                    "{} is up too and can take over the other player's traffic",
+                    other.name
+                ))
+                .color(ORANGE),
+            );
         }
-        ui.add_space(12.0);
+        ui.add_space(20.0);
 
-        let problem = self.problem();
+        let ready = name_problem.is_none() && address_problem.is_none();
+        let spacing = ui.spacing().item_spacing.x;
+        let width = (ui.available_width() - spacing) / 2.0;
         ui.horizontal(|ui| {
-            let ready = problem.is_none();
-            if ui
-                .add_enabled(ready, egui::Button::new("Host a game"))
-                .clicked()
-            {
+            if card(ui, width, "Host a game", "Friends join your PC", ready) {
                 click = Some(StartClick::Mode(Mode::Host));
             }
-            if ui
-                .add_enabled(ready, egui::Button::new("Join a friend"))
-                .clicked()
-            {
+            if card(
+                ui,
+                width,
+                "Join a friend",
+                "Type the host's address next",
+                ready,
+            ) {
                 click = Some(StartClick::Mode(Mode::Guest));
             }
         });
-        if let Some(problem) = problem {
-            ui.label(RichText::new(problem).color(Color32::GRAY));
+
+        if self.offers_restore() {
+            ui.add_space(16.0);
+            let restore = Button::elevated("Restore EA servers", Click::RestoreHosts)
+                .disabled_by(busy.then_some(BUSY));
+            egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color.lerp_to_gamma(ORANGE, 0.12))
+                .corner_radius(10.0)
+                .inner_margin(Margin::same(14))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let (_, pressed) = egui::Sides::new().shrink_left().show(
+                        ui,
+                        |ui| {
+                            ui.label("The game still goes to ds3-blaze, not to the EA servers");
+                        },
+                        |ui| row::action(ui, &restore, 32.0),
+                    );
+                    if pressed {
+                        click = Some(StartClick::RestoreHosts);
+                    }
+                });
         }
         click
     }
+
+    /// Draws the open list of addresses with the buttons that widen and read
+    /// it again.
+    fn address_list(&mut self, ui: &mut egui::Ui) {
+        let mut chosen = self.address;
+        egui::Frame::new()
+            .fill(ui.visuals().faint_bg_color)
+            .corner_radius(8.0)
+            .inner_margin(Margin::same(10))
+            .show(ui, |ui| {
+                for (ip, adapter) in self.shown() {
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut chosen, Some(ip), ip.to_string());
+                        ui.label(RichText::new(&adapter.name).weak());
+                    });
+                }
+                ui.horizontal(|ui| {
+                    if !self.all && ui.small_button("Show all adapters").clicked() {
+                        self.all = true;
+                    }
+                    if ui.small_button("Read adapters again").clicked() {
+                        self.refresh();
+                    }
+                });
+            });
+        self.address = chosen;
+    }
+}
+
+/// Returns the addresses of `adapters` other than loopback ones, each with
+/// its adapter.
+fn addresses(adapters: &[Adapter]) -> impl Iterator<Item = (Ipv4Addr, &Adapter)> {
+    adapters.iter().flat_map(|adapter| {
+        adapter
+            .ipv4
+            .iter()
+            .filter(|ip| !ip.is_loopback())
+            .map(move |ip| (*ip, adapter))
+    })
+}
+
+/// Draws the weak caption over a field.
+fn caption(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).weak());
+}
+
+/// Draws a mode's card `width` points wide and returns whether it was
+/// clicked; a card that is not `enabled` is drawn faded and takes no click.
+fn card(ui: &mut egui::Ui, width: f32, title: &str, subtitle: &str, enabled: bool) -> bool {
+    ui.add_enabled_ui(enabled, |ui| {
+        let frame = egui::Frame::new()
+            .fill(ui.visuals().faint_bg_color)
+            .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+            .corner_radius(12.0)
+            .inner_margin(Margin::same(18))
+            .show(ui, |ui| {
+                // The margins and the border take the rest of `width`.
+                ui.set_width(width - 38.0);
+                ui.set_min_height(56.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(title)
+                            .size(19.0)
+                            .color(ui.visuals().strong_text_color()),
+                    );
+                    ui.label(RichText::new(subtitle).weak());
+                });
+            });
+        let response = ui.interact(
+            frame.response.rect,
+            egui::Id::unique(("mode card", title)),
+            Sense::click(),
+        );
+        // Screen readers and UI Automation see the card as a button.
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), title));
+        if response.hovered() {
+            ui.painter().rect_stroke(
+                frame.response.rect,
+                12.0,
+                ui.visuals().widgets.hovered.bg_stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        response.on_hover_cursor(CursorIcon::PointingHand).clicked()
+    })
+    .inner
 }
 
 #[cfg(test)]
@@ -175,32 +325,82 @@ mod tests {
     use super::*;
     use ds3_blaze_core::hosts::Entry;
 
+    const OWN: Ipv4Addr = Ipv4Addr::new(26, 0, 0, 1);
+    const WIFI: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20);
+    const ZEROTIER: Ipv4Addr = Ipv4Addr::new(10, 147, 0, 5);
+
     fn form(name: &str, address: Option<Ipv4Addr>, hosts: State) -> Form {
         Form {
             name: name.into(),
             address,
-            adapters: Vec::new(),
+            adapters: vec![adapter("Radmin VPN", "Famatech Radmin VPN", OWN)],
             hosts: Ok(hosts),
+            choosing: false,
+            all: false,
         }
     }
 
-    const OWN: Ipv4Addr = Ipv4Addr::new(26, 0, 0, 1);
+    fn adapter(name: &str, description: &str, ip: Ipv4Addr) -> Adapter {
+        Adapter {
+            name: name.into(),
+            description: description.into(),
+            ipv4: vec![ip],
+            up: true,
+        }
+    }
 
     #[test]
-    fn the_name_and_the_address_have_to_be_given() {
+    fn a_refused_name_is_its_own_problem() {
         let refused = form("Isaac Clarke", Some(OWN), State::EaServers);
         assert!(
             refused
-                .problem()
+                .name_problem()
                 .expect("a problem")
-                .starts_with("the name is refused")
+                .starts_with("This name can't be used")
         );
-        let without = form("Carver", None, State::EaServers);
+        assert_eq!(refused.address_problem(), None);
+        let carver = form("Carver", Some(OWN), State::EaServers);
         assert_eq!(
-            without.problem().as_deref(),
-            Some("choose your VPN address")
+            (carver.name_problem(), carver.address_problem()),
+            (None, None)
         );
-        assert_eq!(form("Carver", Some(OWN), State::EaServers).problem(), None);
+    }
+
+    #[test]
+    fn without_an_adapter_the_vpn_is_to_be_connected() {
+        let mut without = form("Carver", None, State::EaServers);
+        assert_eq!(
+            without.address_problem().as_deref(),
+            Some("Choose your VPN address")
+        );
+        without.adapters.clear();
+        assert_eq!(
+            without.address_problem().as_deref(),
+            Some("Connect your VPN first")
+        );
+    }
+
+    #[test]
+    fn shown_lists_vpn_adapters_unless_all() {
+        let mut form = form("Carver", Some(OWN), State::EaServers);
+        form.adapters.push(adapter("Wi-Fi", "Intel Wireless", WIFI));
+        let shown =
+            |form: &Form| -> Vec<Ipv4Addr> { form.shown().into_iter().map(|(ip, _)| ip).collect() };
+        assert_eq!(shown(&form), [OWN]);
+        form.all = true;
+        assert_eq!(shown(&form), [OWN, WIFI]);
+    }
+
+    #[test]
+    fn another_vpn_is_named_once() {
+        let mut form = form("Carver", Some(OWN), State::EaServers);
+        assert_eq!(form.other_vpn(), None);
+        form.adapters
+            .push(adapter("ZeroTier One", "ZeroTier Virtual Port", ZEROTIER));
+        assert_eq!(
+            form.other_vpn().map(|adapter| adapter.name.as_str()),
+            Some("ZeroTier One")
+        );
     }
 
     #[test]

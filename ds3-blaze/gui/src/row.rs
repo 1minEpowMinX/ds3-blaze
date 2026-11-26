@@ -272,6 +272,7 @@ pub fn setup(
         let line = ui
             .interact(line.rect, egui::Id::unique("setup done"), Sense::click())
             .on_hover_cursor(CursorIcon::PointingHand);
+        line.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Setup done"));
         if line.clicked() {
             *expanded = !*expanded;
         }
