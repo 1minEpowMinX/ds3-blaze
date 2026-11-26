@@ -1,7 +1,7 @@
 //! Turning check results into what a step shows.
 
-use crate::banner;
-use crate::step::{Detail, Status, Step};
+use crate::flow::banner;
+use crate::flow::step::{Detail, Status, Step};
 use ds3_blaze_diag::netcheck::{Finding, Severity};
 use ds3_blaze_diag::reach::{Report, Stage};
 

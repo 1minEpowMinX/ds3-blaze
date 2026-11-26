@@ -5,22 +5,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod banner;
-mod checks;
 mod elevate;
-mod guest;
-mod host;
-mod link;
-mod network;
+mod flow;
 #[cfg(debug_assertions)]
 mod preview;
-mod row;
 mod run;
-mod session;
 mod settings;
-mod start;
-mod step;
-mod theme;
+mod ui;
 
 use eframe::egui;
 
@@ -42,7 +33,7 @@ fn main() -> eframe::Result {
         "ds3-blaze",
         options,
         Box::new(|creation| {
-            theme::apply(&creation.egui_ctx);
+            ui::theme::apply(&creation.egui_ctx);
             Ok(Box::new(app::App::new()?))
         }),
     )

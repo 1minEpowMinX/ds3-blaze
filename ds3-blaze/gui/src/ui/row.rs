@@ -1,9 +1,9 @@
 //! The row a step is drawn as: a marker, the step's sentence and a chevron
 //! on one line, and the details in a panel below it while the row is open.
 
-use crate::checks::sentence;
-use crate::step::{Button, Click, Detail, Status, Step};
-use crate::theme::{self, ACCENT, GREEN, GREY, ON_ACCENT, ORANGE, RED, STRONG, TEXT, WEAK};
+use crate::flow::checks::sentence;
+use crate::flow::step::{Button, Click, Detail, Status, Step};
+use crate::ui::theme::{self, ACCENT, GREEN, GREY, ON_ACCENT, ORANGE, RED, STRONG, TEXT, WEAK};
 use ds3_blaze_diag::netcheck::{Finding, Severity};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{

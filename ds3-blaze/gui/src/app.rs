@@ -1,17 +1,15 @@
 //! The window's state and its drawing: the start screen, then the chosen
 //! mode's steps, with the background work they start.
 
-use crate::banner;
 use crate::elevate;
-use crate::guest::{self, GuestAction, GuestFlow, GuestInput};
-use crate::host::{HostAction, HostFlow, HostInput};
-use crate::row;
+use crate::flow::closing::{self, Answer, Closing, Effect};
+use crate::flow::guest::{self, GuestAction, GuestFlow, GuestInput};
+use crate::flow::host::{HostAction, HostFlow, HostInput};
+use crate::flow::start::{self, Form, StartClick};
+use crate::flow::step::{Button, Click};
 use crate::run;
-use crate::session;
 use crate::settings::{self, Mode, Settings};
-use crate::start::{self, Form, StartClick};
-use crate::step::{BUSY, Button, Click};
-use crate::theme;
+use crate::ui::{self as view, banner, row, session, theme};
 use ds3_blaze_core::event::Event;
 use ds3_blaze_core::hosts;
 use ds3_blaze_core::log;
@@ -66,19 +64,6 @@ enum Done {
     Changed,
 }
 
-/// Where closing the window stands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Closing {
-    /// No close was asked for.
-    No,
-    /// The dialog asks whether to restore the EA servers first.
-    Asking,
-    /// The EA servers are being restored before the window closes.
-    Restoring,
-    /// The next close request goes through.
-    Allowed,
-}
-
 /// The window.
 pub struct App {
     settings: Settings,
@@ -131,7 +116,7 @@ impl App {
             log: log::init().map_err(|err| format!("the log file cannot be opened: {err}")),
             busy: false,
             message: None,
-            closing: Closing::No,
+            closing: Closing::default(),
         };
         #[cfg(debug_assertions)]
         let app = app.preview();
@@ -370,30 +355,17 @@ impl App {
         }
     }
 
-    /// Reads the hosts state after `hosts disable` and says what it found;
-    /// the exit code alone is not trusted.
+    /// Reads the hosts state after `hosts disable`, says what it found and
+    /// closes the window when the closing dialog was waiting for it.
     fn restored(&mut self, ctx: &egui::Context, result: io::Result<i32>) {
         self.busy = false;
         if let Screen::Start(form) = &mut self.screen {
             form.refresh();
         }
-        let state = hosts::status();
-        let still = state.as_ref().is_ok_and(start::points_at_ds3_blaze);
-        self.message = match (&result, &state) {
-            (Err(err), _) => Some(err.to_string()),
-            (Ok(_), Ok(state)) if still => {
-                Some(format!("the EA servers were not restored: {state}"))
-            }
-            (Ok(_), Err(err)) => Some(format!("the hosts file cannot be read: {err}")),
-            (Ok(_), Ok(_)) => None,
-        };
-        if self.closing == Closing::Restoring {
-            if result.is_ok() && !still {
-                self.closing = Closing::Allowed;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            } else {
-                self.closing = Closing::No;
-            }
+        let restored = closing::restored(&result, &hosts::status());
+        self.message = restored.message;
+        if self.closing.restore_ended(restored.done) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -403,17 +375,11 @@ impl App {
         if !ctx.input(|input| input.viewport().close_requested()) {
             return;
         }
-        if self.closing == Closing::Allowed {
-            return;
-        }
         let points = hosts::status()
             .as_ref()
             .is_ok_and(start::points_at_ds3_blaze);
-        if points || self.closing == Closing::Restoring {
+        if self.closing.request(points) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            if self.closing == Closing::No {
-                self.closing = Closing::Asking;
-            }
         }
     }
 
@@ -423,9 +389,7 @@ impl App {
         if self.closing != Closing::Asking {
             return;
         }
-        let mut restore = false;
-        let mut close = false;
-        let mut stay = false;
+        let mut answer = None;
         egui::Modal::new(egui::Id::unique("closing")).show(ctx, |ui| {
             ui.label("The hosts file still sends the game to ds3-blaze.");
             ui.label("Restore the EA servers before closing?");
@@ -433,23 +397,27 @@ impl App {
             ui.horizontal(|ui| {
                 let default = ui.button(RichText::new("Restore and close").strong());
                 default.request_focus();
-                restore =
-                    default.clicked() || ui.input(|input| input.key_pressed(egui::Key::Enter));
-                close = ui.button("Close without restoring").clicked();
-                stay = ui.button("Cancel").clicked()
-                    || ui.input(|input| input.key_pressed(egui::Key::Escape));
+                if default.clicked() || ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    answer = Some(Answer::Restore);
+                }
+                if ui.button("Close without restoring").clicked() {
+                    answer = Some(Answer::Close);
+                }
+                if ui.button("Cancel").clicked()
+                    || ui.input(|input| input.key_pressed(egui::Key::Escape))
+                {
+                    answer = Some(Answer::Stay);
+                }
             });
         });
-        if restore {
-            // The server stops before the hosts file stops pointing at it.
-            self.server = None;
-            self.closing = Closing::Restoring;
-            self.restore_hosts(ctx);
-        } else if close {
-            self.closing = Closing::Allowed;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if stay {
-            self.closing = Closing::No;
+        match answer.and_then(|answer| self.closing.answer(answer)) {
+            Some(Effect::RestoreHosts) => {
+                // The server stops before the hosts file stops pointing at it.
+                self.server = None;
+                self.restore_hosts(ctx);
+            }
+            Some(Effect::Close) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            None => {}
         }
     }
 
@@ -507,18 +475,10 @@ impl App {
         else {
             return;
         };
-        if host.trim().is_empty() {
-            *refused = Some("Type the host's VPN address".into());
-            return;
-        }
-        let address = match host.trim().parse::<Ipv4Addr>() {
-            Ok(address) if address != *own && !address.is_unspecified() => address,
-            Ok(_) => {
-                *refused = Some("Type the host's VPN address, not your own".into());
-                return;
-            }
-            Err(_) => {
-                *refused = Some(format!("{} is not an IPv4 address", host.trim()));
+        let address = match guest::parse_host(host, *own) {
+            Ok(address) => address,
+            Err(why) => {
+                *refused = Some(why);
                 return;
             }
         };
@@ -543,12 +503,7 @@ impl App {
                 ..
             } => {
                 let busy = flow.busy();
-                let title = if flow.host().is_unspecified() {
-                    "Joining a friend".to_string()
-                } else {
-                    format!("Joining {}", flow.host())
-                };
-                input.back = header(ui, &title, busy.then_some(BUSY));
+                input.back = header(ui, &flow.title(), flow.stay());
                 let exit = footer(ui, &flow.exit(), errors);
                 if busy {
                     ui.ctx().request_repaint_after(TICK);
@@ -579,14 +534,7 @@ impl App {
                 });
             }
             Screen::Host { flow } => {
-                let stay = if flow.busy() {
-                    Some(BUSY)
-                } else if flow.serving() {
-                    Some("Stop hosting first")
-                } else {
-                    None
-                };
-                input.back = header(ui, "Hosting", stay);
+                input.back = header(ui, &flow.title(), flow.stay());
                 let exit = footer(ui, &flow.exit(), errors);
                 if flow.busy() {
                     ui.ctx().request_repaint_after(TICK);
@@ -678,13 +626,15 @@ fn central(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
                 .inner_margin(Margin::symmetric(16, 0)),
         )
         .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                theme::column(ui, |ui| {
-                    ui.add_space(16.0);
-                    add(ui);
-                    ui.add_space(20.0);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    theme::column(ui, |ui| {
+                        ui.add_space(16.0);
+                        add(ui);
+                        ui.add_space(20.0);
+                    });
                 });
-            });
         });
 }
 
@@ -709,8 +659,7 @@ impl eframe::App for App {
         let busy = self.busy;
         if let Screen::Start(form) = &mut self.screen {
             central(ui, |ui| {
-                start_click = form
-                    .show(ui, busy)
+                start_click = view::start::show(form, ui, busy)
                     .map(|click| (click, form.name.clone(), form.address));
                 if busy {
                     ui.add_space(8.0);
@@ -730,6 +679,11 @@ impl eframe::App for App {
         match start_click {
             Some((StartClick::Mode(mode), name, Some(own))) => self.choose(mode, name, own),
             Some((StartClick::RestoreHosts, ..)) => self.restore_hosts(&ctx),
+            Some((StartClick::ReadAdapters, ..)) => {
+                if let Screen::Start(form) = &mut self.screen {
+                    form.refresh();
+                }
+            }
             _ => {}
         }
         match mode.click {

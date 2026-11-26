@@ -1,11 +1,11 @@
 //! The guest's steps: from the route to the host, through the hosts entry
 //! and the host's server, to the direct link and the game.
 
-use crate::banner::{self, Banner, Tone};
-use crate::checks;
-use crate::link::Link;
-use crate::network::Network;
-use crate::step::{self, BUSY, Button, Click, Detail, NOTHING_TO_UNDO, Status, Step};
+use crate::flow::banner::{self, Banner, Tone};
+use crate::flow::checks;
+use crate::flow::link::Link;
+use crate::flow::network::Network;
+use crate::flow::step::{self, BUSY, Button, Click, Detail, NOTHING_TO_UNDO, Status, Step};
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_diag::netcheck::{Finding, Fix, Severity};
 use ds3_blaze_diag::p2p::{Outcome, Progress};
@@ -114,6 +114,20 @@ pub struct GuestFlow {
     wrote_hosts: bool,
     /// Whether the next hosts state is read after restoring the EA servers.
     restoring: bool,
+}
+
+/// Returns the host's address `typed` names for a guest at `own`, or why
+/// it is refused.
+pub fn parse_host(typed: &str, own: Ipv4Addr) -> Result<Ipv4Addr, String> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Err("Type the host's VPN address".into());
+    }
+    match typed.parse::<Ipv4Addr>() {
+        Ok(address) if address != own && !address.is_unspecified() => Ok(address),
+        Ok(_) => Err("Type the host's VPN address, not your own".into()),
+        Err(_) => Err(format!("{typed} is not an IPv4 address")),
+    }
 }
 
 impl GuestFlow {
@@ -232,9 +246,20 @@ impl GuestFlow {
         Banner::new(Tone::Neutral, format!("Connecting to {}", self.host))
     }
 
-    /// Returns the host's address the steps connect to.
-    pub fn host(&self) -> Ipv4Addr {
-        self.host
+    /// Returns the title of the guest's screen, with the host's address once
+    /// one is known.
+    pub fn title(&self) -> String {
+        if self.host.is_unspecified() {
+            "Joining a friend".into()
+        } else {
+            format!("Joining {}", self.host)
+        }
+    }
+
+    /// Returns why the player can't go back to the start screen, `None`
+    /// while they can.
+    pub fn stay(&self) -> Option<&'static str> {
+        self.busy().then_some(BUSY)
     }
 
     /// Returns whether every step is done, so the setup can fold into one
@@ -520,6 +545,35 @@ mod tests {
 
     fn flow() -> GuestFlow {
         GuestFlow::new(OWN, "Carver".into(), HOST)
+    }
+
+    #[test]
+    fn a_typed_host_address_is_parsed_or_refused() {
+        assert_eq!(parse_host(" 26.0.0.1 ", OWN), Ok(HOST));
+        assert_eq!(
+            parse_host("  ", OWN),
+            Err("Type the host's VPN address".into())
+        );
+        assert_eq!(
+            parse_host("26.0.0.2", OWN),
+            Err("Type the host's VPN address, not your own".into())
+        );
+        assert_eq!(
+            parse_host("0.0.0.0", OWN),
+            Err("Type the host's VPN address, not your own".into())
+        );
+        assert_eq!(
+            parse_host("26.0.0", OWN),
+            Err("26.0.0 is not an IPv4 address".into())
+        );
+    }
+
+    #[test]
+    fn the_title_names_the_host_once_one_is_known() {
+        assert_eq!(flow().title(), "Joining 26.0.0.1");
+        let idle = GuestFlow::new(OWN, "Carver".into(), Ipv4Addr::UNSPECIFIED);
+        assert_eq!(idle.title(), "Joining a friend");
+        assert_eq!(idle.stay(), None);
     }
 
     fn finding(severity: Severity, text: &str) -> Finding {

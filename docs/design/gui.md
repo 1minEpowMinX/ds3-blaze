@@ -119,7 +119,7 @@ A mode's screen holds, from top to bottom:
 
 Every screen is one column of cards, centred in the window and no wider than `theme::COLUMN`, on a background darker than the cards. A title in small capitals opens each part: Setup, This game, Players, Server log on a mode's screen; You and Play on the start screen. The setup rows, the players and the room's three values each sit in one card with thin lines between their parts, and an open row's details, the log and the fields sit in wells darker than the card.
 
-Colour carries one meaning each. The accent fills the banner's button, the one thing to press next, marks the shield and a running step, and colours the bar of a neutral banner; nothing else uses it. Green, orange and red mark how a step, a finding or a player stands, and tint the banner with its bar on the left. A done row is plain text, a waiting one weak, so the eye goes to the banner first and then to whatever needs attention. The palette, the type sizes and the spacing are defined once, in `gui/src/theme.rs`.
+Colour carries one meaning each. The accent fills the banner's button, the one thing to press next, marks the shield and a running step, and colours the bar of a neutral banner; nothing else uses it. Green, orange and red mark how a step, a finding or a player stands, and tint the banner with its bar on the left. A done row is plain text, a waiting one weak, so the eye goes to the banner first and then to whatever needs attention. The palette, the type sizes and the spacing are defined once, in `gui/src/ui/theme.rs`.
 
 ### Banner
 
@@ -143,6 +143,8 @@ The banner is a pure function of a mode's state (`GuestFlow::banner`, `HostFlow:
 A row is a sign (waiting, running, done, needs a fix, failed), one sentence in the player's words and, when it has details, a chevron. A waiting row says what the step will do; a done row says what is now true. Clicking a row opens its panel: the technical lines (the hosts entry, the listeners, the `reach` stages, the exchange counters), the findings with one button per fix, and the step's buttons such as "Check again". Rows stay as the player left them, apart from the setup list opening by itself.
 
 A mode is a list of steps. Each step owns its state, its sentence and its panel; the rendering only reads them, so the step logic has unit tests without a window.
+
+The crate keeps the two apart by folder. `gui/src/flow` holds the modes' state machines and everything the window shows of them (the banner, the steps, the session, the start screen's form, the closing dialog's state) and never names egui; a test fails if one of its modules does. `gui/src/ui` draws what a flow holds and returns the clicks, changing nothing but the fields it binds. `app.rs` carries the clicks to the flows and the flows' actions to the background work, and owns the I/O: the hosts file, the adapters, the server, the elevated runs.
 
 ### Host steps
 

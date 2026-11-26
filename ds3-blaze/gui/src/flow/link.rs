@@ -1,7 +1,7 @@
 //! The direct link step: the exchange with the other player on the game's
 //! port, its countdown and its outcome.
 
-use crate::step::{Button, Click, Detail, Status, Step};
+use crate::flow::step::{Button, Click, Detail, Status, Step};
 use ds3_blaze_diag::p2p::{self, Outcome, Progress};
 use std::io;
 use std::time::Instant;

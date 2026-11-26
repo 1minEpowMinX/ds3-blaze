@@ -1,9 +1,9 @@
 //! Carrying out the work the steps ask for, off the window's thread.
 
 use crate::elevate;
-use crate::guest::{GuestAction, GuestInput};
-use crate::host::{HostAction, HostInput};
-use crate::network;
+use crate::flow::guest::{GuestAction, GuestInput};
+use crate::flow::host::{HostAction, HostInput};
+use crate::flow::network;
 use ds3_blaze_core::hosts;
 use ds3_blaze_core::server::Ports;
 use ds3_blaze_diag::p2p::{self, Outcome, Progress, Timing};

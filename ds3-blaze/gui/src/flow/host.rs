@@ -1,13 +1,13 @@
 //! The host's steps: this PC's network, the hosts entry, the server and the
 //! direct link to the guest; and the session the server's state makes up.
 
-use crate::banner::{self, Banner, Tone};
-use crate::checks;
-use crate::guest::PROMPT;
-use crate::link::Link;
-use crate::network::Network;
-use crate::session::{self, PlayerRow, SessionView};
-use crate::step::{self, BUSY, Button, Click, Detail, NOTHING_TO_UNDO, Status, Step};
+use crate::flow::banner::{self, Banner, Tone};
+use crate::flow::checks;
+use crate::flow::guest::PROMPT;
+use crate::flow::link::Link;
+use crate::flow::network::Network;
+use crate::flow::session::{self, PlayerRow, SessionView};
+use crate::flow::step::{self, BUSY, Button, Click, Detail, NOTHING_TO_UNDO, Status, Step};
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_core::players::{Roster, check_nickname};
 use ds3_blaze_core::server::Ports;
@@ -19,6 +19,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::net::Ipv4Addr;
 use std::time::Instant;
+
+/// Why the player can't go back while the server runs.
+const STOP_FIRST: &str = "Stop hosting first";
 
 const NETWORK: usize = 0;
 const HOSTS: usize = 1;
@@ -199,6 +202,24 @@ impl HostFlow {
     /// Returns this PC's VPN address.
     pub fn own(&self) -> Ipv4Addr {
         self.own
+    }
+
+    /// Returns the title of the host's screen.
+    pub fn title(&self) -> String {
+        "Hosting".into()
+    }
+
+    /// Returns why the player can't go back to the start screen, `None`
+    /// while they can: a step runs, or the server runs and has to be
+    /// stopped first.
+    pub fn stay(&self) -> Option<&'static str> {
+        if self.busy() {
+            Some(BUSY)
+        } else if self.serving() {
+            Some(STOP_FIRST)
+        } else {
+            None
+        }
     }
 
     /// Returns the button that stops the server and restores the EA servers.
@@ -814,6 +835,15 @@ mod tests {
             ("Start server", Click::StartServer)
         );
         assert!(action.elevates);
+    }
+
+    #[test]
+    fn back_waits_for_a_step_and_for_the_server_to_stop() {
+        let mut idle = flow();
+        assert_eq!(idle.stay(), None);
+        idle.apply(HostInput::Click(Click::StartServer), Instant::now());
+        assert_eq!(idle.stay(), Some(BUSY));
+        assert_eq!(ready().stay(), Some(STOP_FIRST));
     }
 
     #[test]

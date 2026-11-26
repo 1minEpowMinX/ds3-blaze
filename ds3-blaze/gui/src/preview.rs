@@ -2,11 +2,11 @@
 //! `DS3_BLAZE_PREVIEW` is set, so that each banner can be looked at without
 //! a VPN, an administrator prompt or a second PC.
 
-use crate::guest::{GuestFlow, GuestInput};
-use crate::host::{HostFlow, HostInput};
-use crate::network::Network;
-use crate::start::Form;
-use crate::step::Click;
+use crate::flow::guest::{GuestFlow, GuestInput};
+use crate::flow::host::{HostFlow, HostInput};
+use crate::flow::network::Network;
+use crate::flow::start::Form;
+use crate::flow::step::Click;
 use ds3_blaze_core::game::SetupReason;
 use ds3_blaze_core::hosts::State;
 use ds3_blaze_core::players::Roster;
