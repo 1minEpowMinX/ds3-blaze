@@ -2,7 +2,7 @@
 //! pill and a chevron on one line, and the details in a panel below it while
 //! the row is open.
 
-use crate::step::{Click, Detail, PlayerRow, Status, Step};
+use crate::step::{Click, Detail, Status, Step};
 use ds3_blaze_diag::netcheck::{Finding, Fix, Severity};
 use eframe::egui::{
     self, Align, Align2, Color32, CursorIcon, FontId, Label, Layout, Margin, Pos2, RichText, Sense,
@@ -21,19 +21,16 @@ const MARKER_GAP: f32 = 10.0;
 /// Width of the title column.
 const TITLE_WIDTH: f32 = 210.0;
 
-/// Widths of a player's name, address and state columns.
-const PLAYER_COLUMNS: [f32; 3] = [230.0, 120.0, 90.0];
-
 pub const GREEN: Color32 = Color32::from_rgb(95, 185, 105);
 pub const ORANGE: Color32 = Color32::from_rgb(230, 150, 50);
 pub const RED: Color32 = Color32::from_rgb(225, 85, 75);
 const BLUE: Color32 = Color32::from_rgb(95, 155, 235);
-const GREY: Color32 = Color32::from_gray(140);
+pub const GREY: Color32 = Color32::from_gray(140);
 
 /// Returns the colour a status is drawn in.
 fn status_colour(status: Status) -> Color32 {
     match status {
-        Status::Waiting | Status::Info => GREY,
+        Status::Waiting => GREY,
         Status::Running => BLUE,
         Status::Ok => GREEN,
         Status::Warning => ORANGE,
@@ -193,14 +190,6 @@ fn marker(ui: &mut egui::Ui, number: Option<usize>, status: Status) {
                 ui.visuals().text_color(),
             );
         }
-        Status::Info => {
-            for offset in [-4.0, 0.0, 4.0] {
-                ui.painter().line_segment(
-                    [centre + vec2(-5.0, offset), centre + vec2(5.0, offset)],
-                    Stroke::new(1.5, ui.visuals().text_color()),
-                );
-            }
-        }
         Status::Ok | Status::Warning | Status::Failed => sign(ui, centre, status, colour),
     }
 }
@@ -328,14 +317,6 @@ fn show_detail(ui: &mut egui::Ui, detail: &Detail) -> Option<Click> {
             None
         }
         Detail::Finding(finding) => show_finding(ui, finding),
-        Detail::Player(player) => show_player(ui, player),
-        Detail::Toggle { label, on, click } => {
-            let mut ticked = *on;
-            ui.add_space(4.0);
-            ui.checkbox(&mut ticked, *label)
-                .changed()
-                .then(|| click.clone())
-        }
     }
 }
 
@@ -393,69 +374,4 @@ fn severity_sign(ui: &mut egui::Ui, severity: Severity) {
         }
         Severity::Problem => sign(ui, centre, Status::Failed, RED),
     }
-}
-
-/// Draws `add` in a cell `width` points wide.
-fn cell(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
-    ui.allocate_ui_with_layout(
-        vec2(width, 30.0),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            ui.set_min_width(width);
-            add(ui);
-        },
-    );
-}
-
-/// Draws a player: the name, which the host types over for the others, the
-/// address, the state and the buttons that apply to it.
-///
-/// The field keeps what is typed in egui's memory and gives
-/// [`Click::Rename`] when it loses focus with a changed name.
-fn show_player(ui: &mut egui::Ui, player: &PlayerRow) -> Option<Click> {
-    let mut click = None;
-    let [name_width, address_width, state_width] = PLAYER_COLUMNS;
-    ui.horizontal(|ui| {
-        cell(ui, name_width, |ui| {
-            if player.you {
-                ui.label(RichText::new(&player.name).color(ui.visuals().strong_text_color()));
-                ui.label(RichText::new("(you)").weak());
-                return;
-            }
-            let id = egui::Id::unique(("player name", player.address));
-            let mut draft = ui
-                .data_mut(|data| data.get_temp::<String>(id))
-                .unwrap_or_else(|| player.name.clone());
-            let field =
-                ui.add(egui::TextEdit::singleline(&mut draft).desired_width(name_width - 16.0));
-            if field.lost_focus() {
-                if draft != player.name {
-                    click = Some(Click::Rename(player.address, draft.trim().to_string()));
-                }
-                ui.data_mut(|data| data.remove::<String>(id));
-            } else if field.has_focus() {
-                ui.data_mut(|data| data.insert_temp(id, draft));
-            }
-        });
-        cell(ui, address_width, |ui| {
-            ui.label(player.address.to_string());
-        });
-        let (word, colour) = match (player.you, player.connected, player.refused) {
-            (true, ..) => ("host", GREEN),
-            (false, true, _) => ("online", GREEN),
-            (false, false, true) => ("refused", ORANGE),
-            (false, false, false) => ("offline", GREY),
-        };
-        cell(ui, state_width, |ui| pill(ui, word, colour));
-        if player.refused && ui.button("Allow").clicked() {
-            click = Some(Click::Allow(player.address));
-        }
-        if let Some(offered) = &player.offered {
-            ui.label(RichText::new(format!("calls itself {offered}")).weak());
-            if ui.small_button("Use this name").clicked() {
-                click = Some(Click::UseOffered(player.address));
-            }
-        }
-    });
-    click
 }

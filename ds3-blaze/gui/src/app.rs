@@ -6,6 +6,7 @@ use crate::guest::{GuestAction, GuestFlow, GuestInput};
 use crate::host::{HostAction, HostFlow, HostInput};
 use crate::row;
 use crate::run;
+use crate::session;
 use crate::settings::{self, Mode, Settings};
 use crate::start::{self, Form, StartClick};
 use crate::step::{Click, Footer, Status, Step};
@@ -622,7 +623,8 @@ impl App {
                             });
                         });
                         let rest = Self::rows(ui, steps, &mut self.open);
-                        input.click = footer_click.or(first).or(rest);
+                        let session = flow.session().and_then(|view| session::show(ui, &view));
+                        input.click = footer_click.or(first).or(rest).or(session);
                         input.own = (chosen != own).then_some(chosen);
                     });
                 });

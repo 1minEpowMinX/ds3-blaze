@@ -12,8 +12,6 @@ pub enum Status {
     Ok,
     Warning,
     Failed,
-    /// A step that only shows what happened, with no outcome of its own.
-    Info,
 }
 
 impl Status {
@@ -25,7 +23,6 @@ impl Status {
             Status::Ok => "ok",
             Status::Warning => "needs fix",
             Status::Failed => "failed",
-            Status::Info => "",
         }
     }
 }
@@ -36,29 +33,6 @@ pub enum Detail {
     Text(String),
     /// A check's result, with its fix button when it has one.
     Finding(Finding),
-    /// A player the host's server knows.
-    Player(PlayerRow),
-    /// A checkbox that gives `click` when it is ticked or cleared.
-    Toggle {
-        label: &'static str,
-        on: bool,
-        click: Click,
-    },
-}
-
-/// A player in the host's players step.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlayerRow {
-    pub address: Ipv4Addr,
-    /// Whether the row is the host's own.
-    pub you: bool,
-    /// The name the host's server gives the player.
-    pub name: String,
-    /// The name the player sent, when it differs from `name`.
-    pub offered: Option<String>,
-    pub connected: bool,
-    /// Whether the server refuses the player's connections.
-    pub refused: bool,
 }
 
 /// A button on a step's line.

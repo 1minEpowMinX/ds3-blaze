@@ -1,15 +1,15 @@
-//! The host's steps: this PC's network, the hosts entry, the server, the
-//! players, the direct link to the guest, the room and the log.
+//! The host's steps: this PC's network, the hosts entry, the server and the
+//! direct link to the guest; and the session the server's state makes up.
 
 use crate::checks;
 use crate::link::Link;
 use crate::network::Network;
-use crate::step::{self, Button, Click, Detail, Footer, PlayerRow, Status, Step};
-use ds3_blaze_core::game::SetupReason;
+use crate::session::{self, PlayerRow, SessionView};
+use crate::step::{self, Button, Click, Detail, Footer, Status, Step};
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_core::players::{Roster, check_nickname};
 use ds3_blaze_core::server::Ports;
-use ds3_blaze_core::snapshot::{Room, Snapshot};
+use ds3_blaze_core::snapshot::Snapshot;
 use ds3_blaze_diag::netcheck::{Finding, Fix};
 use ds3_blaze_diag::p2p::{Outcome, Progress};
 use ds3_blaze_diag::reach::Report;
@@ -18,26 +18,20 @@ use std::io;
 use std::net::Ipv4Addr;
 use std::time::Instant;
 
-const ADDRESS: usize = 0;
+const NETWORK: usize = 0;
 const HOSTS: usize = 1;
 const SERVER: usize = 2;
-const PLAYERS: usize = 3;
-const LINK: usize = 4;
-const ROOM: usize = 5;
-const LOG: usize = 6;
+const LINK: usize = 3;
 
 /// Titles of the steps, in the order they run.
-const TITLES: [&str; 7] = [
+const TITLES: [&str; 4] = [
     "Your VPN address",
     "Point game at this PC",
     "Server",
-    "Players",
     "Direct link to the guest",
-    "Room",
-    "Log",
 ];
 
-/// Number of recent log lines the log step keeps.
+/// Number of recent log lines the flow keeps.
 pub const LOG_LINES: usize = 100;
 
 /// What the open link step says beside "Check again".
@@ -189,7 +183,6 @@ impl HostFlow {
             refused_name: None,
         };
         flow.draw_link(Instant::now());
-        flow.draw_log();
         flow.draw_buttons();
         flow
     }
@@ -216,6 +209,91 @@ impl HostFlow {
     /// Returns the steps in the order they run.
     pub fn steps(&self) -> &[Step] {
         &self.steps
+    }
+
+    /// Returns what the session shows, `None` while no server runs.
+    pub fn session(&self) -> Option<SessionView> {
+        self.ports.as_ref()?;
+        let room = self.snapshot.rooms.first();
+        let room_text = match room {
+            // The game started during the check would take its port.
+            _ if self.link.running() => "Wait until the check with the guest ends".into(),
+            Some(room) => format!(
+                "{}, {} of {}",
+                session::state_word(room.state),
+                room.members.len(),
+                room.capacity
+            ),
+            None => "Start Dead Space 3 and create a game".into(),
+        };
+        Some(SessionView {
+            room: room_text,
+            progress: room.and_then(|room| room.checkpoint).map(|checkpoint| {
+                format!(
+                    "Chapter {}, restore point {}",
+                    checkpoint.chapter, checkpoint.restore_point
+                )
+            }),
+            matchmaking: room.map(|room| {
+                if room.open_to_matchmaking {
+                    "Open"
+                } else {
+                    "Closed"
+                }
+            }),
+            players: self.players(),
+            only_allowed: self.snapshot.roster.only_allowed,
+            refused_name: self.refused_name.clone(),
+            log: self.log.iter().cloned().collect(),
+        })
+    }
+
+    /// Returns the host's own row, then every other address the server
+    /// knows: connected, then neither, then refused, each group by address.
+    fn players(&self) -> Vec<PlayerRow> {
+        let snapshot = &self.snapshot;
+        let roster = &snapshot.roster;
+        let others = |ip: &Ipv4Addr| !ip.is_loopback() && *ip != self.own;
+        let mut addresses: BTreeSet<Ipv4Addr> = snapshot
+            .sessions
+            .iter()
+            .map(|session| session.address)
+            .filter(others)
+            .collect();
+        addresses.extend(snapshot.refused.iter().copied().filter(others));
+        addresses.extend(roster.offered.keys().copied().filter(others));
+        let mut rows: Vec<PlayerRow> = addresses
+            .into_iter()
+            .map(|address| {
+                let name = roster.name_for(address, self.own);
+                let offered = roster
+                    .offered
+                    .get(&address)
+                    .filter(|offered| **offered != name)
+                    .cloned();
+                PlayerRow {
+                    address,
+                    you: false,
+                    name,
+                    offered,
+                    connected: snapshot.sessions.iter().any(|s| s.address == address),
+                    refused: snapshot.refused.contains(&address),
+                }
+            })
+            .collect();
+        rows.sort_by_key(|row| (row.refused, !row.connected, row.address));
+        rows.insert(
+            0,
+            PlayerRow {
+                address: self.own,
+                you: true,
+                name: self.name.clone(),
+                offered: None,
+                connected: true,
+                refused: false,
+            },
+        );
+        rows
     }
 
     /// Returns whether a step runs or an elevated run is awaited.
@@ -260,8 +338,8 @@ impl HostFlow {
             HostInput::Connection(ip) => self.connection(ip, now),
             HostInput::Snapshot(snapshot) => {
                 self.snapshot = snapshot;
-                self.draw_players();
-                self.draw_room();
+                // The link's title names the guest by the server's name.
+                self.draw_link(now);
                 Vec::new()
             }
             HostInput::Log(line) => {
@@ -269,7 +347,6 @@ impl HostFlow {
                     self.log.pop_front();
                 }
                 self.log.push_back(line);
-                self.draw_log();
                 Vec::new()
             }
             HostInput::Progress(progress) => {
@@ -280,7 +357,6 @@ impl HostFlow {
             HostInput::Exchange(result) => {
                 self.link.finish(result, &self.other_vpn);
                 self.draw_link(now);
-                self.draw_room();
                 Vec::new()
             }
             HostInput::Tick => {
@@ -344,7 +420,6 @@ impl HostFlow {
             None
         } else if let Err(reason) = check_nickname(&typed) {
             self.refused_name = Some(format!("{typed:?} is refused: {reason}"));
-            self.draw_players();
             return Vec::new();
         } else {
             Some(typed)
@@ -361,14 +436,14 @@ impl HostFlow {
     }
 
     fn check_network(&mut self) -> Vec<HostAction> {
-        let step = &mut self.steps[ADDRESS];
+        let step = &mut self.steps[NETWORK];
         step.status = Status::Running;
         step.summary = "reading this PC's network settings, a few seconds".into();
         vec![HostAction::CheckNetwork { own: self.own }]
     }
 
     fn network(&mut self, network: io::Result<Network>, now: Instant) -> Vec<HostAction> {
-        let step = &mut self.steps[ADDRESS];
+        let step = &mut self.steps[NETWORK];
         match network {
             Err(err) => {
                 step.status = Status::Warning;
@@ -491,8 +566,6 @@ impl HostFlow {
                     "redirector on TCP {}, Blaze on TCP {}, QoS on TCP {} and UDP {}",
                     ports.redirector, ports.blaze, ports.qos.http, ports.qos.udp
                 ))];
-                self.draw_players();
-                self.draw_room();
                 vec![HostAction::SelfReach {
                     own: self.own,
                     ports,
@@ -548,7 +621,6 @@ impl HostFlow {
         self.guest = Some(guest);
         self.link.start();
         self.draw_link(now);
-        self.draw_room();
         vec![HostAction::Exchange { peer: guest }]
     }
 
@@ -581,142 +653,13 @@ impl HostFlow {
         self.steps[LINK] = step;
     }
 
-    fn draw_players(&mut self) {
-        let snapshot = &self.snapshot;
-        let roster = &snapshot.roster;
-        let others = |ip: &Ipv4Addr| !ip.is_loopback() && *ip != self.own;
-        let mut addresses: BTreeSet<Ipv4Addr> = snapshot
-            .sessions
-            .iter()
-            .map(|session| session.address)
-            .filter(others)
-            .collect();
-        addresses.extend(snapshot.refused.iter().copied().filter(others));
-        addresses.extend(roster.offered.keys().copied().filter(others));
-        let mut rows: Vec<PlayerRow> = addresses
-            .into_iter()
-            .map(|address| {
-                let name = roster.name_for(address, self.own);
-                let offered = roster
-                    .offered
-                    .get(&address)
-                    .filter(|offered| **offered != name)
-                    .cloned();
-                PlayerRow {
-                    address,
-                    you: false,
-                    name,
-                    offered,
-                    connected: snapshot.sessions.iter().any(|s| s.address == address),
-                    refused: snapshot.refused.contains(&address),
-                }
-            })
-            .collect();
-        let connected: Vec<String> = rows
-            .iter()
-            .filter(|row| row.connected)
-            .map(|row| row.name.clone())
-            .collect();
-        let waiting = snapshot.refused.len();
-        if self.serving() {
-            rows.insert(
-                0,
-                PlayerRow {
-                    address: self.own,
-                    you: true,
-                    name: self.name.clone(),
-                    offered: None,
-                    connected: true,
-                    refused: false,
-                },
-            );
-        }
-        let only_allowed = roster.only_allowed;
-        let serving = self.serving();
-        let step = &mut self.steps[PLAYERS];
-        step.summary = match (connected.is_empty(), waiting) {
-            (true, 0) => "no guest yet".into(),
-            (true, waiting) => format!("{waiting} waiting"),
-            (false, 0) => format!("{} connected", connected.join(", ")),
-            (false, waiting) => format!("{} connected · {waiting} waiting", connected.join(", ")),
-        };
-        (step.status, step.pill) = if waiting > 0 {
-            (Status::Warning, Some("review"))
-        } else if connected.is_empty() {
-            (Status::Waiting, None)
-        } else {
-            (Status::Ok, Some("online"))
-        };
-        step.details = rows.into_iter().map(Detail::Player).collect();
-        if let Some(refused) = &self.refused_name {
-            step.details.push(Detail::Text(refused.clone()));
-        }
-        if serving {
-            step.details.push(Detail::Toggle {
-                label: "Only players I allow",
-                on: only_allowed,
-                click: Click::OnlyAllowed(!only_allowed),
-            });
-        }
-        // The link's title names the guest by the name just drawn.
-        if let Some(guest) = self.guest {
-            let name = format!("Direct link to {}", roster.name_for(guest, self.own));
-            self.steps[LINK].title = name;
-        }
-    }
-
-    fn draw_room(&mut self) {
-        let step = &mut self.steps[ROOM];
-        *step = Step::new(TITLES[ROOM]);
-        if self.link.running() {
-            step.summary = "do not start the game until the check with the guest ends".into();
-            return;
-        }
-        let Some(room) = self.snapshot.rooms.first() else {
-            if self.ports.is_some() {
-                step.summary = "start Dead Space 3 and create a game".into();
-            }
-            return;
-        };
-        step.status = Status::Ok;
-        step.pill = Some("in game");
-        step.summary = room_summary(room);
-        if let Some(checkpoint) = room.checkpoint {
-            step.details.push(Detail::Text(format!(
-                "chapter {}, restore point {}",
-                checkpoint.chapter, checkpoint.restore_point
-            )));
-        }
-        for member in room.members.iter().skip(1) {
-            let how = match member.joined_by {
-                SetupReason::Create => "created the game",
-                SetupReason::Join => "joined by invite",
-                SetupReason::Matchmaking { .. } => "joined through quick match",
-            };
-            step.details
-                .push(Detail::Text(format!("{} {how}", member.name)));
-        }
-    }
-
-    fn draw_log(&mut self) {
-        let step = &mut self.steps[LOG];
-        step.status = Status::Info;
-        step.summary = self.log.back().cloned().unwrap_or_default();
-        step.details = self.log.iter().cloned().map(Detail::Text).collect();
-    }
-
     /// Sets the buttons each step shows for the current state.
     fn draw_buttons(&mut self) {
         let idle = !self.busy();
-        self.steps[ADDRESS].buttons = vec![Button {
+        self.steps[NETWORK].buttons = vec![Button {
             label: "Start server",
             click: Click::StartServer,
             enabled: idle && !self.serving(),
-        }];
-        self.steps[LOG].buttons = vec![Button {
-            label: "Open logs folder",
-            click: Click::OpenLogs,
-            enabled: true,
         }];
         self.steps[LINK]
             .buttons
@@ -732,25 +675,12 @@ impl HostFlow {
     }
 }
 
-/// Returns a room's visibility, players and chapter as one line.
-fn room_summary(room: &Room) -> String {
-    let visibility = if room.open_to_matchmaking {
-        "Public"
-    } else {
-        "Private"
-    };
-    let mut summary = format!("{visibility} · {}/{}", room.members.len(), room.capacity);
-    if let Some(checkpoint) = room.checkpoint {
-        summary.push_str(&format!(" · Chapter {}", checkpoint.chapter));
-    }
-    summary
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ds3_blaze_core::game::SetupReason;
     use ds3_blaze_core::server::Ports;
-    use ds3_blaze_core::snapshot::{Checkpoint, Member, RoomState, Session};
+    use ds3_blaze_core::snapshot::{Checkpoint, Member, Room, RoomState, Session};
     use ds3_blaze_diag::reach::Stage;
 
     const OWN: Ipv4Addr = Ipv4Addr::new(26, 0, 0, 1);
@@ -770,15 +700,17 @@ mod tests {
         }
     }
 
+    /// Returns a flow whose server runs.
+    fn serving() -> HostFlow {
+        let mut flow = flow();
+        flow.apply(HostInput::Started(Ok(Ports::default())), Instant::now());
+        flow
+    }
+
+    /// Returns the session's rows other than the host's own.
     fn players(flow: &HostFlow) -> Vec<PlayerRow> {
-        flow.steps()[PLAYERS]
-            .details
-            .iter()
-            .filter_map(|detail| match detail {
-                Detail::Player(row) if !row.you => Some(row.clone()),
-                _ => None,
-            })
-            .collect()
+        let session = flow.session().expect("the server runs");
+        session.players.into_iter().filter(|row| !row.you).collect()
     }
 
     #[test]
@@ -840,7 +772,7 @@ mod tests {
 
     #[test]
     fn the_first_connection_of_a_guest_starts_one_exchange() {
-        let mut flow = flow();
+        let mut flow = serving();
         let now = Instant::now();
         assert_eq!(
             flow.apply(HostInput::Connection(GUEST), now),
@@ -857,39 +789,46 @@ mod tests {
             flow.apply(HostInput::Connection(Ipv4Addr::LOCALHOST), now)
                 .is_empty()
         );
-        assert!(
-            flow.steps()[ROOM]
-                .summary
-                .starts_with("do not start the game")
+        assert_eq!(
+            flow.session().unwrap().room,
+            "Wait until the check with the guest ends"
         );
     }
 
     #[test]
-    fn the_players_summary_names_the_connected_and_counts_the_waiting() {
+    fn the_session_exists_only_while_the_server_runs() {
         let mut flow = flow();
+        let now = Instant::now();
+        assert_eq!(flow.session(), None);
+        flow.apply(HostInput::Started(Ok(Ports::default())), now);
+        assert!(flow.session().is_some());
+        flow.apply(HostInput::Click(Click::RestoreHosts), now);
+        assert_eq!(flow.session(), None);
+    }
+
+    #[test]
+    fn the_session_lists_the_connected_before_the_refused() {
+        let mut flow = serving();
         flow.apply(
             HostInput::Snapshot(Snapshot {
                 sessions: vec![
                     session(1, Ipv4Addr::LOCALHOST, "Host"),
-                    session(2, GUEST, "Carver"),
+                    session(3, STRANGER, "Partner"),
                 ],
-                refused: vec![STRANGER],
+                refused: vec![GUEST],
                 roster: Roster {
-                    offered: BTreeMap::from([(GUEST, "Carver".into())]),
+                    offered: BTreeMap::from([(STRANGER, "Partner".into())]),
                     ..Roster::default()
                 },
                 ..Snapshot::default()
             }),
             Instant::now(),
         );
-        assert_eq!(
-            flow.steps()[PLAYERS].summary,
-            "Carver connected · 1 waiting"
-        );
         let rows = players(&flow);
         assert_eq!(rows.len(), 2);
-        assert!(rows[0].connected && !rows[0].refused);
-        assert!(rows[1].refused && !rows[1].connected);
+        assert!(rows[0].connected && !rows[0].refused && rows[0].address == STRANGER);
+        assert_eq!(rows[0].offered, None);
+        assert!(rows[1].refused && !rows[1].connected && rows[1].address == GUEST);
     }
 
     #[test]
@@ -900,6 +839,7 @@ mod tests {
             BTreeMap::from([(GUEST, "Partner".into())]),
         );
         let now = Instant::now();
+        flow.apply(HostInput::Started(Ok(Ports::default())), now);
         flow.apply(
             HostInput::Snapshot(Snapshot {
                 sessions: vec![session(2, GUEST, "Partner")],
@@ -926,7 +866,7 @@ mod tests {
 
     #[test]
     fn renames_save_the_hosts_names_and_an_empty_one_clears_it() {
-        let mut flow = flow();
+        let mut flow = serving();
         let now = Instant::now();
         assert_eq!(
             flow.apply(
@@ -952,28 +892,36 @@ mod tests {
             )
             .is_empty()
         );
-        assert!(
-            flow.steps()[PLAYERS]
-                .details
-                .iter()
-                .any(|detail| matches!(detail, Detail::Text(text) if text.contains("is refused")))
-        );
+        let refused = flow.session().unwrap().refused_name.unwrap();
+        assert!(refused.contains("is refused"), "{refused}");
     }
 
     #[test]
-    fn a_running_server_lists_the_host_first_with_the_admission_toggle() {
-        let mut flow = flow();
+    fn the_link_names_the_guest_by_the_servers_name() {
+        let mut flow = serving();
         let now = Instant::now();
-        flow.apply(HostInput::Started(Ok(Ports::default())), now);
-        let details = &flow.steps()[PLAYERS].details;
-        assert!(matches!(&details[0], Detail::Player(row) if row.you && row.address == OWN));
-        assert!(matches!(
-            details.last(),
-            Some(Detail::Toggle {
-                click: Click::OnlyAllowed(true),
-                ..
-            })
-        ));
+        flow.apply(HostInput::Connection(GUEST), now);
+        flow.apply(
+            HostInput::Snapshot(Snapshot {
+                sessions: vec![session(2, GUEST, "Partner")],
+                roster: Roster {
+                    names: BTreeMap::from([(GUEST, "Partner".into())]),
+                    ..Roster::default()
+                },
+                ..Snapshot::default()
+            }),
+            now,
+        );
+        assert_eq!(flow.steps()[LINK].title, "Direct link to Partner");
+    }
+
+    #[test]
+    fn a_running_server_lists_the_host_first() {
+        let mut flow = serving();
+        let now = Instant::now();
+        let session = flow.session().unwrap();
+        assert!(session.players[0].you && session.players[0].address == OWN);
+        assert!(!session.only_allowed);
         assert_eq!(flow.footer().text, format!("Guests connect to {OWN}"));
         assert!(!flow.footer().button.enabled);
         flow.apply(HostInput::SelfReach(Vec::new()), now);
@@ -981,14 +929,12 @@ mod tests {
     }
 
     #[test]
-    fn the_room_step_reads_the_snapshot() {
-        let mut flow = flow();
+    fn the_room_reads_the_snapshot() {
+        let mut flow = serving();
         let now = Instant::now();
-        flow.apply(HostInput::Started(Ok(Ports::default())), now);
-        assert_eq!(
-            flow.steps()[ROOM].summary,
-            "start Dead Space 3 and create a game"
-        );
+        let view = flow.session().unwrap();
+        assert_eq!(view.room, "Start Dead Space 3 and create a game");
+        assert_eq!((view.progress, view.matchmaking), (None, None));
         let member = |player_id, name: &str, joined_by| Member {
             player_id,
             name: name.into(),
@@ -1016,24 +962,22 @@ mod tests {
             }),
             now,
         );
-        let room = &flow.steps()[ROOM];
-        assert_eq!(room.summary, "Public · 2/2 · Chapter 4");
-        assert!(
-            room.details
-                .contains(&Detail::Text("Carver joined through quick match".into()))
-        );
+        let view = flow.session().unwrap();
+        assert_eq!(view.room, "In game, 2 of 2");
+        assert_eq!(view.progress.as_deref(), Some("Chapter 4, restore point 2"));
+        assert_eq!(view.matchmaking, Some("Open"));
     }
 
     #[test]
-    fn the_log_step_keeps_the_recent_lines() {
-        let mut flow = flow();
+    fn the_session_keeps_the_recent_log_lines() {
+        let mut flow = serving();
         let now = Instant::now();
         for number in 0..LOG_LINES + 5 {
             flow.apply(HostInput::Log(format!("line {number}")), now);
         }
-        let log = &flow.steps()[LOG];
-        assert_eq!(log.summary, format!("line {}", LOG_LINES + 4));
-        assert_eq!(log.details.len(), LOG_LINES);
+        let log = flow.session().unwrap().log;
+        assert_eq!(log.len(), LOG_LINES);
+        assert_eq!(log.last(), Some(&format!("line {}", LOG_LINES + 4)));
         assert_eq!(
             flow.apply(HostInput::Click(Click::OpenLogs), now),
             [HostAction::OpenLogs]

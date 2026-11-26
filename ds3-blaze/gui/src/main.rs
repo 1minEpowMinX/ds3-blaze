@@ -15,6 +15,7 @@ mod network;
 mod preview;
 mod row;
 mod run;
+mod session;
 mod settings;
 mod start;
 mod step;
