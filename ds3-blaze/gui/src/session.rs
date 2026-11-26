@@ -40,7 +40,8 @@ pub struct PlayerRow {
     pub you: bool,
     /// The name the host's server gives the player.
     pub name: String,
-    /// The name the player sent, when it differs from `name`.
+    /// The name the player sent, when it differs from `name` or the server
+    /// refuses the player.
     pub offered: Option<String>,
     pub connected: bool,
     /// Whether the server refuses the player's connections.

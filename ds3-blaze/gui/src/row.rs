@@ -34,12 +34,6 @@ fn status_colour(status: Status) -> Color32 {
     }
 }
 
-/// Returns the space a line gives the marker, before the sentence or the
-/// input starts.
-fn lead_width(ui: &egui::Ui) -> f32 {
-    MARKER_GAP + MARKER_SIZE + MARKER_GAP + ui.spacing().item_spacing.x * 2.0
-}
-
 /// Draws `step` as the row numbered `number` and returns the click a button
 /// or a field in its details gave.
 ///
@@ -84,48 +78,6 @@ pub fn show(ui: &mut egui::Ui, number: usize, step: &Step, open: &mut bool) -> O
     } else {
         None
     };
-    ui.add(egui::Separator::default().spacing(0.0));
-    click
-}
-
-/// Draws `step` as an unnumbered row with `input` in place of the summary
-/// and the step's buttons after it, and returns the click a button gave.
-///
-/// The summary shows below the line while the step runs or went wrong, and
-/// `error` below it.
-pub fn show_input(
-    ui: &mut egui::Ui,
-    step: &Step,
-    error: Option<&str>,
-    input: impl FnOnce(&mut egui::Ui),
-) -> Option<Click> {
-    let mut click = None;
-    ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), LINE_HEIGHT),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            lead(ui, None, step.status);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                click = buttons(ui, step);
-                ui.with_layout(Layout::left_to_right(Align::Center), input);
-            });
-        },
-    );
-    let worth_showing = matches!(
-        step.status,
-        Status::Running | Status::Warning | Status::Failed
-    );
-    let lines = [
-        (worth_showing && !step.summary.is_empty()).then(|| summary_text(step, ui)),
-        error.map(|error| RichText::new(error).color(RED)),
-    ];
-    for text in lines.into_iter().flatten() {
-        ui.horizontal(|ui| {
-            ui.add_space(lead_width(ui));
-            ui.add(Label::new(text).wrap());
-        });
-    }
-    ui.add_space(4.0);
     ui.add(egui::Separator::default().spacing(0.0));
     click
 }

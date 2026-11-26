@@ -1,5 +1,6 @@
 //! Turning check results into what a step shows.
 
+use crate::banner;
 use crate::step::{Detail, Status, Step};
 use ds3_blaze_diag::netcheck::{Finding, Severity};
 use ds3_blaze_diag::reach::{Report, Stage};
@@ -42,10 +43,7 @@ pub fn add_findings(step: &mut Step, findings: &[Finding]) {
     // The issues name what to change, so the step asks for a fix rather
     // than reporting a failure.
     step.status = Status::Warning;
-    step.summary = match issues {
-        1 => "1 thing to fix on this PC".into(),
-        issues => format!("{issues} things to fix on this PC"),
-    };
+    step.summary = banner::things_to_fix(issues);
 }
 
 /// Returns a `reach` stage as a finding: ok when it passed, a warning for a

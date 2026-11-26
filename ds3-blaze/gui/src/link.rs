@@ -46,6 +46,19 @@ impl Link {
         !self.running && self.result.is_some() && !self.works()
     }
 
+    /// Returns whether the last exchange ended with nothing arriving either
+    /// way.
+    pub fn silent(&self) -> bool {
+        !self.running
+            && matches!(&self.result, Some(Ok(outcome)) if outcome.answered == 0 && outcome.received == 0)
+    }
+
+    /// Returns what the last exchange found wrong, `None` while it runs or
+    /// when both directions work.
+    pub fn failure(&self) -> Option<&str> {
+        self.failure.as_deref().filter(|_| !self.running)
+    }
+
     /// Takes a progress report of the running exchange.
     pub fn progress(&mut self, progress: Progress) {
         match progress {
@@ -122,9 +135,7 @@ impl Link {
                 step.status = Status::Failed;
                 step.summary = "The direct link failed".into();
                 step.details.insert(0, Detail::Text(failure.clone()));
-                let silent =
-                    matches!(result, Ok(outcome) if outcome.answered == 0 && outcome.received == 0);
-                if silent {
+                if self.silent() {
                     step.details.push(Detail::Text(silent_hint.into()));
                 }
             }

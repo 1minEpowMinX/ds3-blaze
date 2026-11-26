@@ -1,12 +1,13 @@
 //! The host's steps: this PC's network, the hosts entry, the server and the
 //! direct link to the guest; and the session the server's state makes up.
 
+use crate::banner::{self, Banner, Tone};
 use crate::checks;
 use crate::guest::PROMPT;
 use crate::link::Link;
 use crate::network::Network;
 use crate::session::{self, PlayerRow, SessionView};
-use crate::step::{self, BUSY, Button, Click, Detail, Footer, NOTHING_TO_UNDO, Status, Step};
+use crate::step::{self, BUSY, Button, Click, Detail, NOTHING_TO_UNDO, Status, Step};
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_core::players::{Roster, check_nickname};
 use ds3_blaze_core::server::Ports;
@@ -201,21 +202,89 @@ impl HostFlow {
         self.own
     }
 
-    /// Returns the line under the steps: the address guests connect to, and
-    /// the button that stops the server and restores the EA servers.
-    pub fn footer(&self) -> Footer {
-        Footer {
-            text: format!("Guests connect to {}", self.own),
-            button: Button::elevated("Stop and restore hosts", Click::RestoreHosts).disabled_by(
-                if self.busy() {
-                    Some(BUSY)
-                } else if !self.serving() && self.steps[HOSTS].status == Status::Waiting {
-                    Some(NOTHING_TO_UNDO)
-                } else {
-                    None
-                },
-            ),
+    /// Returns the button that stops the server and restores the EA servers.
+    pub fn exit(&self) -> Button {
+        Button::elevated("Stop hosting", Click::RestoreHosts).disabled_by(if self.busy() {
+            Some(BUSY)
+        } else if !self.serving() && self.steps[HOSTS].status == Status::Waiting {
+            Some(NOTHING_TO_UNDO)
+        } else {
+            None
+        })
+    }
+
+    /// Returns the banner for where the steps and the server stand: the first
+    /// rule that matches, in the order of the spec's banner table.
+    pub fn banner(&self) -> Banner {
+        let start = || Button::elevated("Start server", Click::StartServer);
+        let copy = || Button::new("Copy address", Click::CopyAddress);
+        if self.link.running() {
+            return Banner::new(Tone::Neutral, self.steps[LINK].summary.clone())
+                .detail("Don't start the game until the check ends")
+                .spinning();
         }
+        if self.busy() {
+            let doing = self
+                .steps
+                .iter()
+                .find(|step| step.status == Status::Running)
+                .map_or(PROMPT, |step| step.summary.as_str());
+            return Banner::new(Tone::Neutral, "Starting the server")
+                .detail(doing)
+                .spinning();
+        }
+        let failed = [HOSTS, SERVER]
+            .into_iter()
+            .find(|index| self.steps[*index].status == Status::Failed);
+        if let Some(index) = failed {
+            let text = match index {
+                HOSTS => "The game can't be pointed at this PC",
+                _ if self.serving() => "Friends can't reach the server",
+                _ => "The server did not start",
+            };
+            let banner = Banner::new(Tone::Failure, text).detail(self.steps[index].summary.clone());
+            return if self.serving() {
+                banner
+            } else {
+                banner.action(start())
+            };
+        }
+        if !self.serving() {
+            return Banner::new(Tone::Neutral, "Start the server so friends can join")
+                .action(start());
+        }
+        let players = self.players();
+        if let Some(refused) = players.iter().find(|player| player.refused) {
+            let detail = match &refused.offered {
+                Some(offered) => format!("{}, calls itself {offered}", refused.address),
+                None => refused.address.to_string(),
+            };
+            return Banner::new(Tone::Warning, "Someone wants to join")
+                .detail(detail)
+                .action(Button::new("Let in", Click::Allow(refused.address)));
+        }
+        let fixes = step::fixes(&self.steps);
+        if !fixes.is_empty() {
+            return Banner::new(Tone::Warning, "Almost there")
+                .detail(banner::things_to_fix(fixes.len()))
+                .action(Button::elevated("Fix it", Click::FixAll));
+        }
+        let names: Vec<String> = players
+            .into_iter()
+            .filter(|player| !player.you && player.connected)
+            .map(|player| player.name)
+            .collect();
+        if names.is_empty() {
+            return Banner::new(Tone::Neutral, "Waiting for friends")
+                .detail(format!("They join at {}", self.own))
+                .action(copy());
+        }
+        Banner::new(
+            Tone::Success,
+            format!("Playing with {}", names.join(" and ")),
+        )
+        .detail(format!("Friends join at {}", self.own))
+        .action(copy())
     }
 
     /// Returns the steps in the order they run.
@@ -278,10 +347,12 @@ impl HostFlow {
             .into_iter()
             .map(|address| {
                 let name = roster.name_for(address, self.own);
+                let refused = snapshot.refused.contains(&address);
+                // A refused row shows no name, so it keeps the one sent.
                 let offered = roster
                     .offered
                     .get(&address)
-                    .filter(|offered| **offered != name)
+                    .filter(|offered| refused || **offered != name)
                     .cloned();
                 PlayerRow {
                     address,
@@ -289,7 +360,7 @@ impl HostFlow {
                     name,
                     offered,
                     connected: snapshot.sessions.iter().any(|s| s.address == address),
-                    refused: snapshot.refused.contains(&address),
+                    refused,
                 }
             })
             .collect();
@@ -418,7 +489,7 @@ impl HostFlow {
             Click::Allow(ip) => vec![HostAction::Allow(ip)],
             Click::OnlyAllowed(on) => vec![HostAction::OnlyAllowed(on)],
             Click::OpenLogs => vec![HostAction::OpenLogs],
-            Click::Connect => Vec::new(),
+            Click::Connect | Click::CopyAddress => Vec::new(),
         }
     }
 
@@ -672,15 +743,6 @@ impl HostFlow {
         };
         self.steps[NETWORK].buttons =
             vec![Button::elevated("Start server", Click::StartServer).disabled_by(start)];
-        self.steps[LINK]
-            .buttons
-            .retain(|button| button.click != Click::FixAll);
-        // One fix has its own button beside its finding.
-        if step::fixes(&self.steps).len() > 1 {
-            self.steps[LINK]
-                .buttons
-                .push(Button::elevated("Fix it", Click::FixAll).disabled_by(busy));
-        }
     }
 }
 
@@ -714,6 +776,137 @@ mod tests {
         let mut flow = flow();
         flow.apply(HostInput::Started(Ok(Ports::default())), Instant::now());
         flow
+    }
+
+    /// Returns a flow whose server runs and answered its own check.
+    fn ready() -> HostFlow {
+        let mut flow = serving();
+        flow.apply(HostInput::SelfReach(Vec::new()), Instant::now());
+        flow
+    }
+
+    fn refused_stranger() -> HostInput {
+        HostInput::Snapshot(Snapshot {
+            refused: vec![STRANGER],
+            roster: Roster {
+                offered: BTreeMap::from([(STRANGER, "Stranger".into())]),
+                ..Roster::default()
+            },
+            ..Snapshot::default()
+        })
+    }
+
+    fn network_with_a_fix() -> HostInput {
+        HostInput::Network(Ok(Network {
+            local: vec![Finding {
+                severity: ds3_blaze_diag::netcheck::Severity::Problem,
+                text: "no game rule".into(),
+                fix: Some(Fix::GameRule),
+            }],
+            ..Network::default()
+        }))
+    }
+
+    #[test]
+    fn host_idle_asks_to_start() {
+        let banner = flow().banner();
+        assert_eq!(banner.tone, Tone::Neutral);
+        assert_eq!(banner.text, "Start the server so friends can join");
+        let action = banner.action.expect("an action");
+        assert_eq!(
+            (action.label, action.click),
+            ("Start server", Click::StartServer)
+        );
+        assert!(action.elevates);
+    }
+
+    #[test]
+    fn host_running_says_what_it_does() {
+        let mut flow = flow();
+        flow.apply(HostInput::Click(Click::StartServer), Instant::now());
+        let banner = flow.banner();
+        assert_eq!(banner.text, "Starting the server");
+        assert_eq!(banner.detail.as_deref(), Some("Checking this PC's network"));
+        assert!(banner.spinner && banner.action.is_none());
+    }
+
+    #[test]
+    fn host_failure_names_it() {
+        let mut flow = flow();
+        flow.apply(
+            HostInput::Started(Err(io::Error::other("port taken"))),
+            Instant::now(),
+        );
+        let banner = flow.banner();
+        assert_eq!(banner.tone, Tone::Failure);
+        assert_eq!(banner.text, "The server did not start");
+        assert_eq!(banner.detail, Some(flow.steps()[SERVER].summary.clone()));
+        assert_eq!(banner.action.expect("an action").click, Click::StartServer);
+    }
+
+    #[test]
+    fn host_refused_address_asks_to_let_in() {
+        let mut flow = ready();
+        flow.apply(refused_stranger(), Instant::now());
+        let banner = flow.banner();
+        assert_eq!(banner.tone, Tone::Warning);
+        assert_eq!(banner.text, "Someone wants to join");
+        assert_eq!(
+            banner.detail,
+            Some(format!("{STRANGER}, calls itself Stranger"))
+        );
+        let action = banner.action.expect("an action");
+        assert_eq!(
+            (action.label, action.click),
+            ("Let in", Click::Allow(STRANGER))
+        );
+    }
+
+    #[test]
+    fn host_fixes_lead_to_fix_it() {
+        let mut flow = ready();
+        flow.apply(network_with_a_fix(), Instant::now());
+        let banner = flow.banner();
+        assert_eq!(banner.text, "Almost there");
+        assert_eq!(banner.action.expect("an action").click, Click::FixAll);
+    }
+
+    #[test]
+    fn host_waits_for_friends() {
+        let banner = ready().banner();
+        assert_eq!(banner.tone, Tone::Neutral);
+        assert_eq!(banner.text, "Waiting for friends");
+        assert_eq!(banner.detail, Some(format!("They join at {OWN}")));
+        assert_eq!(banner.action.expect("an action").click, Click::CopyAddress);
+    }
+
+    #[test]
+    fn host_plays_with_the_guests() {
+        let mut flow = ready();
+        flow.apply(
+            HostInput::Snapshot(Snapshot {
+                sessions: vec![session(2, GUEST, "Carver")],
+                roster: Roster {
+                    offered: BTreeMap::from([(GUEST, "Carver".into())]),
+                    ..Roster::default()
+                },
+                ..Snapshot::default()
+            }),
+            Instant::now(),
+        );
+        let banner = flow.banner();
+        assert_eq!(banner.tone, Tone::Success);
+        assert_eq!(banner.text, "Playing with Carver");
+        assert_eq!(banner.detail, Some(format!("Friends join at {OWN}")));
+    }
+
+    #[test]
+    fn host_refusal_comes_before_fixes() {
+        let mut flow = ready();
+        let now = Instant::now();
+        flow.apply(network_with_a_fix(), now);
+        flow.apply(refused_stranger(), now);
+        assert_eq!(flow.banner().text, "Someone wants to join");
     }
 
     /// Returns the session's rows other than the host's own.
@@ -792,7 +985,7 @@ mod tests {
             .map(|step| step.summary.clone())
             .collect();
         assert_eq!(summaries, WAITING);
-        assert_eq!(flow().footer().button.disabled, Some(NOTHING_TO_UNDO));
+        assert_eq!(flow().exit().disabled, Some(NOTHING_TO_UNDO));
     }
 
     #[test]
@@ -951,10 +1144,10 @@ mod tests {
         let session = flow.session().unwrap();
         assert!(session.players[0].you && session.players[0].address == OWN);
         assert!(!session.only_allowed);
-        assert_eq!(flow.footer().text, format!("Guests connect to {OWN}"));
-        assert!(!flow.footer().button.enabled());
+        assert_eq!(flow.exit().label, "Stop hosting");
+        assert!(!flow.exit().enabled());
         flow.apply(HostInput::SelfReach(Vec::new()), now);
-        assert!(flow.footer().button.enabled());
+        assert!(flow.exit().enabled());
     }
 
     #[test]

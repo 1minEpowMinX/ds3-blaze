@@ -1,6 +1,7 @@
 //! The window's state and its drawing: the start screen, then the chosen
 //! mode's steps, with the background work they start.
 
+use crate::banner;
 use crate::elevate;
 use crate::guest::{GuestAction, GuestFlow, GuestInput};
 use crate::host::{HostAction, HostFlow, HostInput};
@@ -9,12 +10,11 @@ use crate::run;
 use crate::session;
 use crate::settings::{self, Mode, Settings};
 use crate::start::{self, Form, StartClick};
-use crate::step::{Click, Footer, Step};
+use crate::step::{Button, Click, Step};
 use ds3_blaze_core::event::Event;
 use ds3_blaze_core::hosts;
 use ds3_blaze_core::log;
 use ds3_blaze_core::server::{Config, Ports, Server, ServerHandle};
-use ds3_blaze_core::vpn::Adapter;
 use eframe::egui::{self, Margin, RichText, vec2};
 use std::future::Future;
 use std::io;
@@ -43,8 +43,6 @@ enum Screen {
     },
     Host {
         flow: Box<HostFlow>,
-        /// The adapters the host's address is chosen from.
-        adapters: Vec<Adapter>,
     },
 }
 
@@ -53,8 +51,6 @@ enum Screen {
 struct ModeInput {
     click: Option<Click>,
     back: bool,
-    /// The VPN address the host chose in place of the current one.
-    own: Option<Ipv4Addr>,
 }
 
 /// Result of work the window started in the background.
@@ -147,7 +143,6 @@ impl App {
             Ok("host") => (
                 Screen::Host {
                     flow: Box::new(preview::host()),
-                    adapters: preview::adapters(preview::HOST),
                 },
                 "Isaac",
                 3,
@@ -445,8 +440,8 @@ impl App {
     }
 
     /// Saves the name and `mode` and shows that mode's steps for the player
-    /// at `own`, one of the addresses of `adapters`.
-    fn choose(&mut self, mode: Mode, name: String, own: Ipv4Addr, adapters: Vec<Adapter>) {
+    /// at `own`.
+    fn choose(&mut self, mode: Mode, name: String, own: Ipv4Addr) {
         self.settings.name = name.clone();
         self.settings.mode = Some(mode);
         self.save();
@@ -467,7 +462,6 @@ impl App {
             },
             Mode::Host => Screen::Host {
                 flow: Box::new(HostFlow::new(own, name, self.settings.players.clone())),
-                adapters,
             },
         };
         let rows = match &self.screen {
@@ -476,17 +470,6 @@ impl App {
             Screen::Start(_) => 0,
         };
         self.open = vec![false; rows];
-    }
-
-    /// Starts the host's steps over for the address `own`.
-    fn host_at(&mut self, own: Ipv4Addr) {
-        if let Screen::Host { flow, .. } = &mut self.screen {
-            **flow = HostFlow::new(
-                own,
-                self.settings.name.clone(),
-                self.settings.players.clone(),
-            );
-        }
     }
 
     /// Starts the guest's steps for the typed host address, or says why the
@@ -524,12 +507,11 @@ impl App {
         self.run_guest(ctx, actions);
     }
 
-    /// Draws `steps` after the first as numbered rows and returns the click
-    /// one of them gave.
+    /// Draws `steps` as numbered rows and returns the click one of them gave.
     fn rows(ui: &mut egui::Ui, steps: &[Step], open: &mut [bool]) -> Option<Click> {
         let mut click = None;
-        for (index, step) in steps.iter().enumerate().skip(1) {
-            if let Some(row_click) = row::show(ui, index, step, &mut open[index]) {
+        for (index, step) in steps.iter().enumerate() {
+            if let Some(row_click) = row::show(ui, index + 1, step, &mut open[index]) {
                 click = Some(row_click);
             }
         }
@@ -552,89 +534,54 @@ impl App {
                 let busy = flow.busy();
                 let title = format!("ds3-blaze: joining as {name}");
                 input.back = header(ui, title, "guest", !busy);
-                let footer_click = footer(ui, &flow.footer(), errors);
+                let exit = footer(ui, &flow.exit(), errors);
                 if busy {
                     ui.ctx().request_repaint_after(TICK);
                 }
                 egui::CentralPanel::default_margins().show(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        let steps = flow.steps();
                         let mut enter = false;
-                        let first = row::show_input(ui, &steps[0], refused.as_deref(), |ui| {
+                        let banner = banner::show(ui, &flow.banner(), |ui| {
                             let field = egui::TextEdit::singleline(host)
-                                .hint_text("the address the host's window shows")
+                                .hint_text("26.0.0.1")
                                 .margin(vec2(8.0, 6.0))
-                                .desired_width(ui.available_width() - 8.0);
+                                .desired_width(260.0);
                             let field = ui.add_enabled(!busy, field);
                             enter = field.lost_focus()
                                 && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                            if let Some(refused) = refused.as_deref() {
+                                ui.label(RichText::new(refused).color(ERROR));
+                            }
                         });
-                        let rest = Self::rows(ui, steps, &mut self.open);
-                        input.click = footer_click.or(first).or(rest);
+                        ui.add_space(8.0);
+                        let rows = Self::rows(ui, flow.steps(), &mut self.open);
+                        input.click = exit.or(banner).or(rows);
                         if enter && !busy {
                             input.click = Some(Click::Connect);
                         }
                     });
                 });
             }
-            Screen::Host { flow, adapters } => {
+            Screen::Host { flow } => {
                 let leave = !flow.busy() && !flow.serving();
                 let title = format!("ds3-blaze: hosting as {name}");
                 input.back = header(ui, title, "host", leave);
-                let footer_click = footer(ui, &flow.footer(), errors);
+                let exit = footer(ui, &flow.exit(), errors);
                 if flow.busy() {
                     ui.ctx().request_repaint_after(TICK);
                 }
                 egui::CentralPanel::default_margins().show(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        let steps = flow.steps();
-                        let own = flow.own();
-                        let mut chosen = own;
-                        let first = row::show_input(ui, &steps[0], None, |ui| {
-                            ui.add_enabled_ui(leave, |ui| {
-                                egui::ComboBox::from_id_salt("own address")
-                                    .width(ui.available_width() - 8.0)
-                                    .selected_text(address_label(own, adapters))
-                                    .show_ui(ui, |ui| {
-                                        for (ip, adapter) in addresses(adapters) {
-                                            ui.selectable_value(
-                                                &mut chosen,
-                                                ip,
-                                                format!("{ip} ({})", adapter.name),
-                                            );
-                                        }
-                                    });
-                            });
-                        });
-                        let rest = Self::rows(ui, steps, &mut self.open);
+                        let banner = banner::show(ui, &flow.banner(), |_| {});
+                        ui.add_space(8.0);
+                        let rows = Self::rows(ui, flow.steps(), &mut self.open);
                         let session = flow.session().and_then(|view| session::show(ui, &view));
-                        input.click = footer_click.or(first).or(rest).or(session);
-                        input.own = (chosen != own).then_some(chosen);
+                        input.click = exit.or(banner).or(rows).or(session);
                     });
                 });
             }
         }
         input
-    }
-}
-
-/// Returns the addresses of `adapters` other than loopback ones, each with
-/// its adapter.
-fn addresses(adapters: &[Adapter]) -> impl Iterator<Item = (Ipv4Addr, &Adapter)> {
-    adapters.iter().flat_map(|adapter| {
-        adapter
-            .ipv4
-            .iter()
-            .filter(|ip| !ip.is_loopback())
-            .map(move |ip| (*ip, adapter))
-    })
-}
-
-/// Returns `own` with the name of the adapter holding it.
-fn address_label(own: Ipv4Addr, adapters: &[Adapter]) -> String {
-    match addresses(adapters).find(|(ip, _)| *ip == own) {
-        Some((ip, adapter)) => format!("{ip} ({})", adapter.name),
-        None => own.to_string(),
     }
 }
 
@@ -669,8 +616,9 @@ fn header(ui: &mut egui::Ui, title: String, mode: &str, leave: bool) -> bool {
 }
 
 /// Draws the footer of a mode's screen with the `errors` the window has to
-/// show above it, and returns the click its button gave.
-fn footer(ui: &mut egui::Ui, footer: &Footer, errors: [&Option<String>; 2]) -> Option<Click> {
+/// show above it and the `exit` button at the right, and returns the click
+/// the button gave.
+fn footer(ui: &mut egui::Ui, exit: &Button, errors: [&Option<String>; 2]) -> Option<Click> {
     let mut click = None;
     egui::Panel::bottom("footer")
         .frame(egui::Frame::new().inner_margin(Margin::symmetric(16, 12)))
@@ -678,17 +626,11 @@ fn footer(ui: &mut egui::Ui, footer: &Footer, errors: [&Option<String>; 2]) -> O
             for error in errors.into_iter().flatten() {
                 ui.label(RichText::new(error).color(ERROR));
             }
-            egui::Sides::new().show(
-                ui,
-                |ui| {
-                    ui.label(RichText::new(&footer.text).weak());
-                },
-                |ui| {
-                    if row::action(ui, &footer.button, 32.0) {
-                        click = Some(footer.button.click.clone());
-                    }
-                },
-            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if row::action(ui, exit, 32.0) {
+                    click = Some(exit.click.clone());
+                }
+            });
         });
     click
 }
@@ -715,14 +657,9 @@ impl eframe::App for App {
         if let Screen::Start(form) = &mut self.screen {
             egui::CentralPanel::default_margins().show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    start_click = form.show(ui, busy).map(|click| {
-                        (
-                            click,
-                            form.name.clone(),
-                            form.address,
-                            form.adapters.clone(),
-                        )
-                    });
+                    start_click = form
+                        .show(ui, busy)
+                        .map(|click| (click, form.name.clone(), form.address));
                     if busy {
                         ui.horizontal(|ui| {
                             ui.spinner();
@@ -739,15 +676,18 @@ impl eframe::App for App {
         }
         self.closing_dialog(&ctx);
         match start_click {
-            Some((StartClick::Mode(mode), name, Some(own), adapters)) => {
-                self.choose(mode, name, own, adapters)
-            }
+            Some((StartClick::Mode(mode), name, Some(own))) => self.choose(mode, name, own),
             Some((StartClick::RestoreHosts, ..)) => self.restore_hosts(&ctx),
             _ => {}
         }
         match mode.click {
             // Connect reads the typed address before the steps start.
             Some(Click::Connect) => self.connect(&ctx),
+            Some(Click::CopyAddress) => {
+                if let Screen::Host { flow } = &self.screen {
+                    ctx.copy_text(flow.own().to_string());
+                }
+            }
             Some(click) => {
                 let now = Instant::now();
                 match &mut self.screen {
@@ -763,9 +703,6 @@ impl eframe::App for App {
                 }
             }
             None => {}
-        }
-        if let Some(own) = mode.own {
-            self.host_at(own);
         }
         if mode.back {
             self.screen = Screen::Start(Form::read(self.settings.name.clone()));

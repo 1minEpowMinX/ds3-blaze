@@ -98,6 +98,8 @@ pub enum Click {
     UseOffered(Ipv4Addr),
     OnlyAllowed(bool),
     OpenLogs,
+    /// The host's VPN address put on the clipboard.
+    CopyAddress,
 }
 
 /// A step of a mode.
@@ -140,12 +142,4 @@ pub fn fixes(steps: &[Step]) -> Vec<Fix> {
         }
     }
     fixes
-}
-
-/// The line under a mode's steps: what to tell the other player, and the
-/// button that ends the mode's changes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Footer {
-    pub text: String,
-    pub button: Button,
 }

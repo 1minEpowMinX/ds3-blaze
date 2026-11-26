@@ -11,7 +11,6 @@ use ds3_blaze_core::hosts::State;
 use ds3_blaze_core::players::Roster;
 use ds3_blaze_core::server::Ports;
 use ds3_blaze_core::snapshot::{Checkpoint, Member, Room, RoomState, Session, Snapshot};
-use ds3_blaze_core::vpn::Adapter;
 use ds3_blaze_diag::netcheck::{Finding, Fix, Severity};
 use ds3_blaze_diag::p2p::Outcome;
 use ds3_blaze_diag::reach::{Report, Stage};
@@ -25,16 +24,6 @@ pub const VARIABLE: &str = "DS3_BLAZE_PREVIEW";
 pub const HOST: Ipv4Addr = Ipv4Addr::new(26, 0, 0, 1);
 pub const GUEST: Ipv4Addr = Ipv4Addr::new(26, 0, 0, 2);
 const STRANGER: Ipv4Addr = Ipv4Addr::new(26, 0, 0, 54);
-
-/// Returns the VPN adapter the preview's player chooses from.
-pub fn adapters(own: Ipv4Addr) -> Vec<Adapter> {
-    vec![Adapter {
-        name: "Radmin VPN".into(),
-        description: "Famatech Radmin VPN Ethernet Adapter".into(),
-        ipv4: vec![own],
-        up: true,
-    }]
-}
 
 fn finding(severity: Severity, text: &str, fix: Option<Fix>) -> Finding {
     Finding {
