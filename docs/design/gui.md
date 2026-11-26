@@ -101,17 +101,17 @@ The full client scenario of today's `selftest` (login, room creation, the second
 
 The start screen asks for the player's name and offers the two modes as large cards: host a game, or join a friend.
 
-The player's own VPN address is chosen here once, for both modes. The first address `vpn::choices` returns is taken and shown as one line with its adapter's name and "Change", which opens the list with VPN adapters first and the others behind "Show all adapters". Without an adapter to choose, the line asks the player to connect the VPN and offers "Read adapters again". When another VPN adapter is up beside the chosen one, one line under the address says that another VPN can take over the other player's traffic.
+The player's own VPN address is chosen here once, for both modes. The first address `vpn::choices` returns is taken and shown as one line with its adapter's name and "Change", which opens the list of VPN adapters, and of the adapter holding the chosen address, with the others behind "Show all adapters". Without an adapter to choose, the line asks the player to connect the VPN and offers "Read adapters again". When another VPN adapter is up beside the chosen one, one line under the address says that another VPN can take over the other player's traffic.
 
-A name the rule refuses says why under the name field, and the cards stay disabled. When the hosts file holds ds3-blaze entries while no server or connection is active, as after a crash, a notice offers "Restore EA servers"; otherwise the screen says nothing about the hosts file.
+A name the rule refuses says why under the name field, and the cards stay disabled. Each card is one button, for the keyboard and screen readers as well as the mouse. When the hosts file holds ds3-blaze entries while no server or connection is active, as after a crash, a notice offers "Restore EA servers"; otherwise the screen says nothing about the hosts file.
 
 ### Mode screen
 
 A mode's screen holds, from top to bottom:
 
-- **Header:** Back while nothing runs, and "Hosting" or "Joining" with the host's address. The window title is "ds3-blaze"; the player's name shows on the start screen and in the host's session only.
+- **Header:** Back as an arrow, disabled with its reason while a step runs or the server runs, and "Hosting" or "Joining" with the host's address ("Joining a friend" before one is typed). The window title is "ds3-blaze"; the player's name shows on the start screen and in the host's session only.
 - **Banner:** one sentence on where things stand, an optional second line, one main button and a tone (neutral, success, warning, failure). A spinner takes the button's place while a step runs.
-- **Setup:** the steps as quiet rows. While every step is done they collapse into one line, "Setup done", which the player may open; when a step runs, needs a fix or fails, the list opens by itself.
+- **Setup:** the steps as quiet rows. Once the mode is set up (`setup_done`: every guest step done; the host's server running with the steps before the link done and the link done or waiting for a guest) they collapse into one line, "Setup done", which the player may open; when a step runs, needs a fix or fails, the list opens by itself.
 - **Session**, host only: the room, the players and the server log.
 - **Footer:** the button that ends the mode's changes, "Stop hosting" or "Disconnect".
 
@@ -121,15 +121,16 @@ The banner is a pure function of a mode's state (`GuestFlow::banner`, `HostFlow:
 
 | Guest | Host |
 |---|---|
-| nothing started: the host's address field and "Connect" | server stopped: "Start the server so friends can join", "Start server" |
-| a step running: what it is doing, such as "Connecting to" the host's address | a step running: what it is doing, such as "Starting the server" |
-| a step failed: what happened, and the step's action or "Check again" | a step failed: what happened, and the step's action |
-| findings with fixes: "Almost there", how many things to fix, "Fix it" | an address turned away: "Someone wants to join" with the address, "Let in" |
+| the hosts entry not in place and nothing failed, as before Connect and after Disconnect: "Join a friend", the host's address field, "Connect" | the direct link checked: the countdown, and not to start the game until the check ends |
+| the direct link checked: the countdown, and not to start the game until the check ends | a step running: "Starting the server", with what the step does below |
+| a step running: "Connecting to" the host's address, with what the step does below | a step failed: what failed, the step's sentence, "Start server"; a server that runs but fails its own check says friends can't reach it |
+| a step failed: what failed, the step's sentence, "Check again" (Connect), and the address field to change a wrong address | server stopped: "Start the server so friends can join", "Start server" |
+| findings with fixes: "Almost there", how many things to fix, "Fix it" | an address turned away: "Someone wants to join" with the address and the nickname it sent, "Let in" |
 | the direct link failed with nothing to fix: what that means, "Check again" | findings with fixes: as the guest |
 | everything done: "Ready: start Dead Space 3 and choose online co-op" | serving, nobody connected: "Waiting for friends", the address, "Copy address" |
 | | players connected: "Playing with" their names, "Copy address" |
 
-"Fix it" applies every fix the findings offer in one elevated run of `fix several`, so the player sees one administrator prompt.
+"Fix it" applies every fix the findings offer in one elevated run of `fix several`, so the player sees one administrator prompt. The banner's button is the only place "Connect", "Start server" and "Fix it" appear; the rows do not repeat it.
 
 ### Step rows
 
@@ -153,7 +154,7 @@ A mode is a list of steps. Each step owns its state, its sentence and its panel;
 | Room | the room's state and how many of its places are taken; before a room exists, "Start Dead Space 3 and create a game"; while the check with the guest runs, to wait before starting the game |
 | Progress | the chapter and restore point read from `GAME_CHECKPOINT` |
 | Matchmaking | whether the room is open to matchmaking |
-| Players | the host's own row; each connected guest with its address and a pencil to rename it in place, an emptied name returning to the guest's own, and beside a name the host set the guest's own nickname with "Use this name"; each refused address as someone turned away, with the nickname it sent and "Let in"; the switch "Only let in players I approve" |
+| Players | the host's own row; each connected guest with its address and its name in a field to rename it in place, an emptied name returning to the guest's own, and beside a name the host set the guest's own nickname with "Use this name"; each refused address as someone turned away, with the nickname it sent and "Let in"; the switch "Only let in players I approve" |
 | Log | the last `SESSION_LOG_LINES` lines, "Open logs folder" |
 
 A refused address has no name field; it gets one once it is let in.
@@ -182,7 +183,7 @@ The GUI does not block the game from starting during a check. A passing run ends
 
 Writing the hosts file and applying fixes need administrator rights; the GUI itself runs without them, so the server never runs elevated. The GUI starts `ds3-blaze-cli.exe` next to itself through `ShellExecuteExW` with the verb `runas` (one UAC prompt per action), waits for it, and then checks the outcome by reading the state again: the hosts state needs no rights, and the network findings come from the local check.
 
-A button that starts such a run carries a shield before its label and the hover text "Windows asks for permission"; the step that builds the button marks it (`Button::elevates`), and the rendering draws the shield. A disabled button gives the reason on hover (`Button::why_disabled`).
+A button that starts such a run carries a shield before its label and the hover text "Windows asks for permission"; the flow that builds the button marks it (`Button::elevates`), and `row::action`, the one function that draws a `Button`, draws the shield. A disabled button gives the reason on hover (`Button::disabled`).
 
 ### Settings
 
