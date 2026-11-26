@@ -331,9 +331,30 @@ fn run_fix(command: FixCommand) -> io::Result<()> {
 
 /// Returns the command line that carries out `fix`.
 fn fix_command(fix: &Fix) -> String {
-    let exe = env!("CARGO_BIN_NAME");
+    let invoked = std::env::args().next();
+    let exe = std::env::current_exe().ok();
+    fix_command_from(
+        fix,
+        invoked.as_deref().unwrap_or(env!("CARGO_BIN_NAME")),
+        exe.as_deref(),
+    )
+}
+
+/// Returns the command line that carries out `fix` with the executable
+/// started as `invoked`; the server rule names its program only when it is
+/// not `current_exe`, which `fix server-rule` takes by default.
+fn fix_command_from(fix: &Fix, invoked: &str, current_exe: Option<&std::path::Path>) -> String {
+    // PowerShell runs a quoted path only through the call operator.
+    let exe = if invoked.contains(' ') {
+        format!("& \"{invoked}\"")
+    } else {
+        invoked.to_string()
+    };
     match fix {
         Fix::GameRule => format!("{exe} fix game-rule"),
+        Fix::ServerRule(program) if Some(program.as_path()) == current_exe => {
+            format!("{exe} fix server-rule")
+        }
         Fix::ServerRule(program) => {
             format!("{exe} fix server-rule --program \"{}\"", program.display())
         }
@@ -447,6 +468,39 @@ mod tests {
         assert!(player("26.0.0.2").is_err());
         assert!(player("26.0.0.2= ").is_err());
         assert!(player("26.0.2=Carver").is_err());
+    }
+
+    #[test]
+    fn fix_commands_run_as_printed() {
+        let exe = std::path::Path::new(r"C:\My Games\ds3-blaze.exe");
+        assert_eq!(
+            fix_command_from(&Fix::GameRule, r".\ds3-blaze.exe", Some(exe)),
+            r".\ds3-blaze.exe fix game-rule"
+        );
+        assert_eq!(
+            fix_command_from(
+                &Fix::ServerRule(exe.into()),
+                &exe.display().to_string(),
+                Some(exe)
+            ),
+            r#"& "C:\My Games\ds3-blaze.exe" fix server-rule"#
+        );
+        assert_eq!(
+            fix_command_from(
+                &Fix::ServerRule(r"D:\gui.exe".into()),
+                "ds3-blaze",
+                Some(exe)
+            ),
+            r#"ds3-blaze fix server-rule --program "D:\gui.exe""#
+        );
+        assert_eq!(
+            fix_command_from(
+                &Fix::PrivateProfile(Ipv4Addr::new(26, 0, 0, 1)),
+                "ds3-blaze",
+                None
+            ),
+            "ds3-blaze fix network-profile --address 26.0.0.1"
+        );
     }
 
     #[test]
