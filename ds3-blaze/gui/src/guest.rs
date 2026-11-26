@@ -167,7 +167,12 @@ impl GuestFlow {
     /// matches, in the order of the spec's banner table.
     pub fn banner(&self) -> Banner {
         let connect = || Button::elevated("Connect", Click::Connect);
-        if !self.busy() && self.steps.iter().all(|step| step.status == Status::Waiting) {
+        let failed = |index: &usize| self.steps[*index].status == Status::Failed;
+        // Before Connect and after Disconnect the hosts entry is not in place.
+        if !self.busy()
+            && self.steps[HOSTS].status == Status::Waiting
+            && !self.steps.iter().any(|step| step.status == Status::Failed)
+        {
             return Banner::new(Tone::Neutral, "Join a friend")
                 .detail("Type the address the host's window shows")
                 .action(connect())
@@ -188,10 +193,7 @@ impl GuestFlow {
                 .detail(doing)
                 .spinning();
         }
-        let failed = [NETWORK, HOSTS, REACH]
-            .into_iter()
-            .find(|index| self.steps[*index].status == Status::Failed);
-        if let Some(index) = failed {
+        if let Some(index) = [NETWORK, HOSTS, REACH].into_iter().find(failed) {
             let text = match index {
                 NETWORK => "This PC can't reach the host",
                 HOSTS => "The game can't be pointed at the host",
@@ -229,6 +231,17 @@ impl GuestFlow {
             );
         }
         Banner::new(Tone::Neutral, format!("Connecting to {}", self.host))
+    }
+
+    /// Returns the host's address the steps connect to.
+    pub fn host(&self) -> Ipv4Addr {
+        self.host
+    }
+
+    /// Returns whether every step is done, so the setup can fold into one
+    /// line.
+    pub fn setup_done(&self) -> bool {
+        self.steps.iter().all(|step| step.status == Status::Ok)
     }
 
     /// Returns the steps in the order they run.
@@ -810,6 +823,20 @@ mod tests {
         assert_eq!((action.label, action.click), ("Connect", Click::Connect));
         assert!(action.elevates);
         assert!(banner.input);
+    }
+
+    #[test]
+    fn guest_idle_again_after_disconnect() {
+        let now = Instant::now();
+        let mut flow = connected(Vec::new(), working());
+        assert!(flow.setup_done());
+        flow.apply(GuestInput::Click(Click::RestoreHosts), now);
+        flow.apply(GuestInput::Elevated(Ok(0)), now);
+        flow.apply(GuestInput::Hosts(Ok(State::EaServers)), now);
+        let banner = flow.banner();
+        assert_eq!(banner.text, "Join a friend");
+        assert!(banner.input && banner.action.is_some());
+        assert!(!flow.setup_done());
     }
 
     #[test]

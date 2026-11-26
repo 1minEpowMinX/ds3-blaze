@@ -10,7 +10,7 @@ use crate::run;
 use crate::session;
 use crate::settings::{self, Mode, Settings};
 use crate::start::{self, Form, StartClick};
-use crate::step::{Button, Click, Step};
+use crate::step::{BUSY, Button, Click};
 use ds3_blaze_core::event::Event;
 use ds3_blaze_core::hosts;
 use ds3_blaze_core::log;
@@ -85,6 +85,9 @@ pub struct App {
     screen: Screen,
     /// Whether each row of the mode's steps is open, by position.
     open: Vec<bool>,
+    /// Whether the player opened the folded "Setup done" line; it folds
+    /// again once a step needs attention and then ends.
+    setup_open: bool,
     /// The error of saving the settings last, shown until a save succeeds.
     save_error: Option<String>,
     runtime: tokio::runtime::Runtime,
@@ -118,6 +121,7 @@ impl App {
             settings_path,
             screen: Screen::Start(form),
             open: Vec::new(),
+            setup_open: false,
             save_error: None,
             runtime: tokio::runtime::Runtime::new()?,
             done_sender,
@@ -507,21 +511,9 @@ impl App {
         self.run_guest(ctx, actions);
     }
 
-    /// Draws `steps` as numbered rows and returns the click one of them gave.
-    fn rows(ui: &mut egui::Ui, steps: &[Step], open: &mut [bool]) -> Option<Click> {
-        let mut click = None;
-        for (index, step) in steps.iter().enumerate() {
-            if let Some(row_click) = row::show(ui, index + 1, step, &mut open[index]) {
-                click = Some(row_click);
-            }
-        }
-        click
-    }
-
     /// Draws the current mode's screen and returns what the player did.
     fn mode_screen(&mut self, ui: &mut egui::Ui) -> ModeInput {
         let mut input = ModeInput::default();
-        let name = &self.settings.name;
         let errors = [&self.message, &self.save_error];
         match &mut self.screen {
             Screen::Start(_) => {}
@@ -532,8 +524,12 @@ impl App {
                 ..
             } => {
                 let busy = flow.busy();
-                let title = format!("ds3-blaze: joining as {name}");
-                input.back = header(ui, title, "guest", !busy);
+                let title = if flow.host().is_unspecified() {
+                    "Joining a friend".to_string()
+                } else {
+                    format!("Joining {}", flow.host())
+                };
+                input.back = header(ui, &title, busy.then_some(BUSY));
                 let exit = footer(ui, &flow.exit(), errors);
                 if busy {
                     ui.ctx().request_repaint_after(TICK);
@@ -554,7 +550,15 @@ impl App {
                             }
                         });
                         ui.add_space(8.0);
-                        let rows = Self::rows(ui, flow.steps(), &mut self.open);
+                        let done = flow.setup_done();
+                        self.setup_open &= done;
+                        let rows = row::setup(
+                            ui,
+                            flow.steps(),
+                            &mut self.open,
+                            done,
+                            &mut self.setup_open,
+                        );
                         input.click = exit.or(banner).or(rows);
                         if enter && !busy {
                             input.click = Some(Click::Connect);
@@ -563,9 +567,14 @@ impl App {
                 });
             }
             Screen::Host { flow } => {
-                let leave = !flow.busy() && !flow.serving();
-                let title = format!("ds3-blaze: hosting as {name}");
-                input.back = header(ui, title, "host", leave);
+                let stay = if flow.busy() {
+                    Some(BUSY)
+                } else if flow.serving() {
+                    Some("Stop hosting first")
+                } else {
+                    None
+                };
+                input.back = header(ui, "Hosting", stay);
                 let exit = footer(ui, &flow.exit(), errors);
                 if flow.busy() {
                     ui.ctx().request_repaint_after(TICK);
@@ -574,7 +583,15 @@ impl App {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let banner = banner::show(ui, &flow.banner(), |_| {});
                         ui.add_space(8.0);
-                        let rows = Self::rows(ui, flow.steps(), &mut self.open);
+                        let done = flow.setup_done();
+                        self.setup_open &= done;
+                        let rows = row::setup(
+                            ui,
+                            flow.steps(),
+                            &mut self.open,
+                            done,
+                            &mut self.setup_open,
+                        );
                         let session = flow.session().and_then(|view| session::show(ui, &view));
                         input.click = exit.or(banner).or(rows).or(session);
                     });
@@ -585,10 +602,9 @@ impl App {
     }
 }
 
-/// Draws the header of a mode's screen, `title` with Back before it and the
-/// name of the `mode` at the right, and returns whether Back was pressed;
-/// `leave` enables Back.
-fn header(ui: &mut egui::Ui, title: String, mode: &str, leave: bool) -> bool {
+/// Draws the header of a mode's screen: Back as an arrow, then `title`;
+/// returns whether Back was pressed. `stay` disables Back and says why.
+fn header(ui: &mut egui::Ui, title: &str, stay: Option<&'static str>) -> bool {
     let mut back = false;
     egui::Panel::top("header")
         .frame(
@@ -597,20 +613,17 @@ fn header(ui: &mut egui::Ui, title: String, mode: &str, leave: bool) -> bool {
                 .inner_margin(Margin::symmetric(16, 10)),
         )
         .show(ui, |ui| {
-            egui::Sides::new().show(
-                ui,
-                |ui| {
-                    back = ui
-                        .add_enabled(leave, egui::Button::new("Back"))
-                        .on_disabled_hover_text("stop the server or wait for the step to end")
-                        .clicked();
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(title).strong());
-                },
-                |ui| {
-                    ui.label(RichText::new(mode).weak());
-                },
-            );
+            ui.horizontal(|ui| {
+                let arrow = egui::Button::new(RichText::new("←").size(18.0));
+                let response = ui.add_enabled(stay.is_none(), arrow);
+                let response = match stay {
+                    Some(reason) => response.on_disabled_hover_text(reason),
+                    None => response.on_hover_text("Back"),
+                };
+                back = response.clicked();
+                ui.add_space(6.0);
+                ui.label(RichText::new(title).size(16.0).strong());
+            });
         });
     back
 }

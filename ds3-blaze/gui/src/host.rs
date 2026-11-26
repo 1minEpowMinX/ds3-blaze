@@ -287,6 +287,17 @@ impl HostFlow {
         .action(copy())
     }
 
+    /// Returns whether the setup can fold into one line: the server runs
+    /// with every step before the link done, and the link done or waiting
+    /// for a guest.
+    pub fn setup_done(&self) -> bool {
+        self.serving()
+            && self.steps[..LINK]
+                .iter()
+                .all(|step| step.status == Status::Ok)
+            && matches!(self.steps[LINK].status, Status::Ok | Status::Waiting)
+    }
+
     /// Returns the steps in the order they run.
     pub fn steps(&self) -> &[Step] {
         &self.steps
@@ -869,6 +880,25 @@ mod tests {
         let banner = flow.banner();
         assert_eq!(banner.text, "Almost there");
         assert_eq!(banner.action.expect("an action").click, Click::FixAll);
+    }
+
+    #[test]
+    fn the_setup_folds_once_the_server_answers() {
+        let now = Instant::now();
+        let mut flow = flow();
+        assert!(!flow.setup_done());
+        for input in [
+            HostInput::Click(Click::StartServer),
+            HostInput::Network(Ok(Network::default())),
+            HostInput::Hosts(Ok(State::Redirected(Ipv4Addr::LOCALHOST))),
+            HostInput::Started(Ok(Ports::default())),
+            HostInput::SelfReach(Vec::new()),
+        ] {
+            flow.apply(input, now);
+        }
+        assert!(flow.setup_done());
+        flow.apply(HostInput::Connection(GUEST), now);
+        assert!(!flow.setup_done());
     }
 
     #[test]

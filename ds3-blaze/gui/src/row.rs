@@ -3,9 +3,10 @@
 
 use crate::step::{Button, Click, Detail, Status, Step};
 use ds3_blaze_diag::netcheck::{Finding, Severity};
+use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Color32, CursorIcon, FontId, Label, Layout, Margin, Pos2, RichText, Sense,
-    Stroke, Vec2, vec2,
+    Stroke, Vec2, pos2, vec2,
 };
 
 /// Height of a row's line, in points.
@@ -17,10 +18,16 @@ const MARKER_SIZE: f32 = 24.0;
 /// Space before the marker and between the marker and the sentence.
 const MARKER_GAP: f32 = 10.0;
 
+/// Space an elevating button's label leaves for the shield before it.
+const SHIELD_SPACE: f32 = 20.0;
+
+/// What an elevating button says on hover.
+const PERMISSION: &str = "Windows asks for permission";
+
 pub const GREEN: Color32 = Color32::from_rgb(95, 185, 105);
 pub const ORANGE: Color32 = Color32::from_rgb(230, 150, 50);
 pub const RED: Color32 = Color32::from_rgb(225, 85, 75);
-const BLUE: Color32 = Color32::from_rgb(95, 155, 235);
+pub const BLUE: Color32 = Color32::from_rgb(95, 155, 235);
 pub const GREY: Color32 = Color32::from_gray(140);
 
 /// Returns the colour a status is drawn in.
@@ -177,14 +184,109 @@ fn chevron(ui: &mut egui::Ui, open: Option<bool>) {
 
 /// Draws `button` at least `height` points high and returns whether it was
 /// pressed; a disabled button tells why on hover.
+///
+/// A button that brings up the administrator prompt has a shield before its
+/// label and says so on hover.
 pub fn action(ui: &mut egui::Ui, button: &Button, height: f32) -> bool {
-    let widget = egui::Button::new(button.label).min_size(vec2(0.0, height));
+    let label: egui::WidgetText = if button.elevates {
+        let mut job = LayoutJob::default();
+        job.append(
+            button.label,
+            SHIELD_SPACE,
+            TextFormat {
+                font_id: egui::TextStyle::Button.resolve(ui.style()),
+                // The placeholder takes the button's own text colour.
+                color: Color32::PLACEHOLDER,
+                ..TextFormat::default()
+            },
+        );
+        job.into()
+    } else {
+        button.label.into()
+    };
+    let widget = egui::Button::new(label).min_size(vec2(0.0, height));
     let response = ui.add_enabled(button.enabled(), widget);
+    if button.elevates {
+        let left = response.rect.left() + ui.spacing().button_padding.x;
+        let centre = pos2(left + SHIELD_SPACE / 2.0 - 3.0, response.rect.center().y);
+        let colour = if button.enabled() { BLUE } else { GREY };
+        shield(ui.painter(), centre, colour);
+    }
     let response = match button.disabled {
         Some(reason) => response.on_disabled_hover_text(reason),
+        None if button.elevates => response.on_hover_text(PERMISSION),
         None => response,
     };
     response.clicked()
+}
+
+/// Paints the shield Windows marks administrator actions with around
+/// `centre`.
+fn shield(painter: &egui::Painter, centre: Pos2, colour: Color32) {
+    let outline = [
+        (-5.5, -6.5),
+        (5.5, -6.5),
+        (5.5, 0.5),
+        (0.0, 7.0),
+        (-5.5, 0.5),
+    ]
+    .map(|(x, y)| centre + vec2(x, y));
+    painter.add(egui::Shape::convex_polygon(
+        outline.to_vec(),
+        colour,
+        Stroke::NONE,
+    ));
+    painter.line_segment(
+        [centre + vec2(0.0, -6.5), centre + vec2(0.0, 7.0)],
+        Stroke::new(1.0, colour.gamma_multiply(0.5)),
+    );
+}
+
+/// Draws the steps as rows and returns the click one of them gave; while
+/// `done`, they fold into one "Setup done" line that `expanded` opens.
+pub fn setup(
+    ui: &mut egui::Ui,
+    steps: &[Step],
+    open: &mut [bool],
+    done: bool,
+    expanded: &mut bool,
+) -> Option<Click> {
+    if done {
+        let line = ui
+            .allocate_ui_with_layout(
+                vec2(ui.available_width(), LINE_HEIGHT),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    lead(ui, None, Status::Ok);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        chevron(ui, Some(*expanded));
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            let text =
+                                RichText::new("Setup done").color(ui.visuals().strong_text_color());
+                            ui.add(Label::new(text).selectable(false));
+                        });
+                    });
+                },
+            )
+            .response;
+        let line = ui
+            .interact(line.rect, egui::Id::unique("setup done"), Sense::click())
+            .on_hover_cursor(CursorIcon::PointingHand);
+        if line.clicked() {
+            *expanded = !*expanded;
+        }
+        ui.add(egui::Separator::default().spacing(0.0));
+        if !*expanded {
+            return None;
+        }
+    }
+    let mut click = None;
+    for (index, step) in steps.iter().enumerate() {
+        if let Some(row_click) = show(ui, index + 1, step, &mut open[index]) {
+            click = Some(row_click);
+        }
+    }
+    click
 }
 
 /// Draws the step's buttons right to left and returns the click one gave.
