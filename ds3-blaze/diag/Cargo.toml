@@ -1,0 +1,15 @@
+[package]
+name = "ds3-blaze-diag"
+description = "Network checks between players and the client-side test of a ds3-blaze server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ds3-blaze-core = { path = "../core" }
+blaze-ssl-async.workspace = true
+tdf.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true

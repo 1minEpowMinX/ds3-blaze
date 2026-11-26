@@ -7,12 +7,10 @@
 //! and firewall state for a VPN peer; `p2p-check` adds a UDP exchange between
 //! two players on the game's port.
 
-mod netcheck;
-mod p2pcheck;
 mod proxy;
-mod selftest;
 
 use ds3_blaze_core::{blaze, log, models, qos, redirector};
+use ds3_blaze_diag::{netcheck, p2pcheck, selftest};
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::process::ExitCode;

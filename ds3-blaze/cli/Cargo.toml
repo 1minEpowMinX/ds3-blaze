@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 ds3-blaze-core = { path = "../core" }
+ds3-blaze-diag = { path = "../diag" }
 blaze-ssl-async.workspace = true
 tdf.workspace = true
 bytes.workspace = true
