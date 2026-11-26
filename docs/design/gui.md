@@ -55,14 +55,16 @@ The `vpn` module lists IPv4 adapters through `GetAdaptersAddresses`, with the sa
 
 ### P2P check
 
-`p2p` has two modes over the same ping exchange as today's `p2pcheck`:
+`p2p` is today's `p2pcheck` exchange with its output turned into events: both sides ping each other's known address on `GAME_PORT` and answer the other's pings, as the game does. Both players run the same exchange, so the GUI adds no protocol of its own and the result means what `p2p-check` means today.
 
-- `Probe { peer }` pings a known peer and answers its pings. The guest runs it against the host as soon as it connects.
-- `Listen` answers any ping and, from the first one, learns the sender and pings it too. The host runs it from "Start server" until the game starts, so the guest's probe finds an answer whenever it runs.
+The two runs start at the same moment without the players arranging it, because the guest's `reach` is the signal:
 
-Both bind `GAME_PORT`, which the game needs, so neither may run while `deadspace3.exe` does. Progress arrives as events, and cancellation stops the exchange.
+- The guest's window starts the exchange with the host as soon as `reach` passes.
+- The host's window starts it with an address the first time a Blaze connection arrives from that address, which is the guest's `reach` a moment earlier. Refused connections count too, so the check runs while the host decides whether to allow the guest.
 
-In `Listen` the host sends nothing until the guest's first ping, so that ping has to pass the host's firewall unsolicited. In the game both sides send, and a firewall that tracks UDP flows lets the replies in. A host that never hears the guest's ping therefore gets a warning with its fix, not a failure that stops the steps: the game may still connect.
+Each run lasts at most `DEFAULT_SECONDS`, the existing limit, and the row counts it down. Neither window starts it again by itself; "Check again" runs it on demand, and the other player presses theirs too.
+
+The exchange binds `GAME_PORT`, which the game holds while it runs. A failed bind is reported as "close the game to run the check", which the bind error already says today, so the GUI needs no knowledge of the game's process.
 
 ### Server reachability
 
@@ -116,7 +118,9 @@ The summary carries the information a player watches during play, so a collapsed
 
 ### Order of the steps
 
-The direct link step comes before the game step in both modes because the check needs `GAME_PORT`. The GUI looks for `deadspace3.exe` once a second through a process snapshot (`CreateToolhelp32Snapshot`). When the game appears, the GUI closes the P2P socket and the direct link row shows that the check is paused while the game runs; "Check again" asks the player to close the game first.
+The direct link step comes before the game step in both modes because the check needs `GAME_PORT`. While it runs, the row says not to start the game until the countdown ends. The host's room step says the same until the check with the guest has finished.
+
+When the host's game is already running as the guest connects, the host's run cannot bind the port and the guest's pings go unanswered. The guest's row then says that a host whose game is running closes it, and both press "Check again".
 
 ### Elevation
 
@@ -140,7 +144,7 @@ Closing the window while the hosts file points at ds3-blaze asks whether to rest
 | `hosts enable --address IP`, `hosts disable`, `hosts status` | the hosts entry; `enable` and `disable` need an elevated console |
 | `fix game-rule`, `fix server-rule`, `fix network-profile` | the network fixes the GUI offers |
 | `net-check --peer IP` | the network findings |
-| `p2p-check --peer IP`, `p2p-check --listen` | the P2P exchange in either mode |
+| `p2p-check --peer IP` | the P2P exchange |
 | `reach --host IP` | the guest's server check |
 | `proxy`, `ea-check` | research only, built with the feature `research` |
 
@@ -167,7 +171,8 @@ The README and the Nexus page still share the few sentences of the short start, 
 
 - `hosts::rewrite`: with and without a byte order mark, ANSI text, CRLF and LF, an empty file, a file without a final line break, legacy-marker lines, a section without an end line, repeated `enable`.
 - `PlayerBook`: admission and naming rules as `Config::admits` and `Config::name_for` have them now, and changes while sessions are open.
-- `p2p`: `Probe` against `Listen` on the loopback address with different ports, including `Listen` learning its peer from the first ping.
+- `p2p`: two exchanges on the loopback address with different ports, started a moment apart; one exchange whose port is already taken.
+- The host's trigger: a first connection from an address starts one run, a second connection from it starts none, a refused connection starts one.
 - `reach` against a server started in the test.
 - The protocol test described above.
 - The steps of each mode as state machines, without a window.
@@ -180,7 +185,7 @@ Each stage is a branch of its own, merged into `main` when CI passes. A stage th
 2. `Server::start` with ports in the configuration, the protocol test, the `selftest` command and its CI step removed.
 3. Events, snapshot and `PlayerBook`; the core stops printing and the CLI prints the events.
 4. `clap`, the `hosts` module and `hosts` command, `scripts/hosts.ps1` removed.
-5. Diagnostics: findings and fixes, the `fix` command, `p2p` modes, `reach`.
+5. Diagnostics: findings and fixes, the `fix` command, `p2p` events, `reach`.
 6. The GUI, and the renaming of the executables.
 7. README, Nexus page, network-checks and the docs index rewritten for the GUI.
 
