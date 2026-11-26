@@ -978,7 +978,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "ds3-blaze-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blaze-ssl-async",
  "bytes",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "ds3-blaze-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blaze-ssl-async",
  "bytes",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "ds3-blaze-diag"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blaze-ssl-async",
  "ds3-blaze-core",
@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "ds3-blaze-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ds3-blaze-core",
  "ds3-blaze-diag",
