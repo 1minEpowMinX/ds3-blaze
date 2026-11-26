@@ -107,12 +107,13 @@ impl Server {
         let stop = CancellationToken::new();
         let token = stop.clone();
         let advertise = config.advertise;
+        let players = blaze_config.players.clone();
         let task = tokio::spawn(async move {
             let services = async {
                 tokio::try_join!(
                     redirector::serve(redirector, instance, token.clone()),
                     blaze::serve(blaze, blaze_config, token.clone()),
-                    qos::serve(qos_http, qos_udp, advertise, token.clone()),
+                    qos::serve(qos_http, qos_udp, advertise, players, token.clone()),
                 )
                 .map(|_| ())
             };
