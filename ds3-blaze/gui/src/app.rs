@@ -2,49 +2,57 @@
 //! mode's steps, with the background work they start.
 
 use crate::elevate;
+use crate::guest::{GuestAction, GuestFlow, GuestInput};
 use crate::row;
+use crate::run;
 use crate::settings::{self, Mode, Settings};
 use crate::start::{self, Form, StartClick};
-use crate::step::Step;
+use crate::step::{Click, Step};
 use ds3_blaze_core::hosts;
 use eframe::egui::{self, Color32, RichText};
 use std::future::Future;
 use std::io;
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
-/// Titles of each mode's steps, in the order they run.
-fn titles(mode: Mode) -> &'static [&'static str] {
-    match mode {
-        Mode::Host => &[
-            "Your VPN address",
-            "Point game at this PC",
-            "Server",
-            "Players",
-            "Direct link to the guest",
-            "Room",
-            "Log",
-        ],
-        Mode::Guest => &[
-            "Host's VPN address",
-            "Point game at host",
-            "Reach host's server",
-            "Direct link to host",
-            "Start Dead Space 3",
-        ],
-    }
-}
+/// Titles of the host's steps, in the order they run.
+const HOST_TITLES: [&str; 7] = [
+    "Your VPN address",
+    "Point game at this PC",
+    "Server",
+    "Players",
+    "Direct link to the guest",
+    "Room",
+    "Log",
+];
+
+/// How often a running countdown is drawn again.
+const TICK: Duration = Duration::from_secs(1);
 
 /// What the window shows.
 enum Screen {
     Start(Form),
-    Mode { mode: Mode, steps: Vec<Step> },
+    Guest {
+        flow: GuestFlow,
+        own: Ipv4Addr,
+        /// The host's address as typed.
+        host: String,
+        /// Why the typed address was refused.
+        refused: Option<String>,
+    },
+    Host {
+        steps: Vec<Step>,
+    },
 }
 
 /// Result of work the window started in the background.
 enum Done {
-    /// `hosts disable` ended, with the command line's exit code.
+    /// `hosts disable` from the start screen or the closing dialog ended,
+    /// with the command line's exit code.
     Restored(io::Result<i32>),
+    Guest(GuestInput),
 }
 
 /// Where closing the window stands.
@@ -72,9 +80,9 @@ pub struct App {
     runtime: tokio::runtime::Runtime,
     done_sender: mpsc::Sender<Done>,
     done: mpsc::Receiver<Done>,
-    /// Whether an elevated command is running.
+    /// Whether a restore from the start screen or the closing dialog runs.
     busy: bool,
-    /// What the last elevated command left to say.
+    /// What that restore left to say.
     message: Option<String>,
     closing: Closing,
 }
@@ -106,26 +114,41 @@ impl App {
         })
     }
 
-    /// Runs `work` on the runtime and hands its result to the next frame,
-    /// which it asks egui to draw.
-    fn spawn(&self, ctx: &egui::Context, work: impl Future<Output = Done> + Send + 'static) {
+    /// Returns a function that hands a result to the next frame, which it
+    /// asks egui to draw.
+    fn sink<T: 'static>(
+        &self,
+        ctx: &egui::Context,
+        wrap: fn(T) -> Done,
+    ) -> impl Fn(T) + Send + Sync + Clone + 'static {
         let sender = self.done_sender.clone();
         let ctx = ctx.clone();
-        self.runtime.spawn(async move {
+        move |value| {
             // The receiver lives as long as the window.
-            let _ = sender.send(work.await);
+            let _ = sender.send(wrap(value));
             ctx.request_repaint();
-        });
+        }
+    }
+
+    /// Runs `work` on the runtime.
+    fn spawn(&self, work: impl Future<Output = ()> + Send + 'static) {
+        self.runtime.spawn(work);
     }
 
     /// Starts `hosts disable` through the command line, elevated.
     fn restore_hosts(&mut self, ctx: &egui::Context) {
         self.busy = true;
         self.message = None;
-        self.spawn(ctx, async {
-            let args = vec!["hosts".to_string(), "disable".to_string()];
-            Done::Restored(elevate::run_cli(args).await)
-        });
+        let send = self.sink(ctx, Done::Restored);
+        self.spawn(async move { send(elevate::run_cli(elevate::hosts_args(None)).await) });
+    }
+
+    /// Carries out the guest's `actions`.
+    fn run_guest(&self, ctx: &egui::Context, actions: Vec<GuestAction>) {
+        for action in actions {
+            let send = self.sink(ctx, Done::Guest);
+            self.spawn(run::guest(action, send));
+        }
     }
 
     /// Takes the results of the background work that ended.
@@ -133,6 +156,13 @@ impl App {
         while let Ok(done) = self.done.try_recv() {
             match done {
                 Done::Restored(result) => self.restored(ctx, result),
+                Done::Guest(input) => {
+                    // A result for a guest screen that was left is dropped.
+                    if let Screen::Guest { flow, .. } = &mut self.screen {
+                        let actions = flow.apply(input, Instant::now());
+                        self.run_guest(ctx, actions);
+                    }
+                }
             }
         }
     }
@@ -227,14 +257,108 @@ impl App {
             .map(|err| format!("{}: {err}", self.settings_path.display()));
     }
 
-    /// Saves the name and `mode` and shows that mode's steps.
-    fn choose(&mut self, mode: Mode, name: String) {
-        self.settings.name = name;
+    /// Saves the name and `mode` and shows that mode's steps for the player
+    /// at `own`.
+    fn choose(&mut self, mode: Mode, name: String, own: Ipv4Addr) {
+        self.settings.name = name.clone();
         self.settings.mode = Some(mode);
         self.save();
-        let steps: Vec<Step> = titles(mode).iter().map(|title| Step::new(title)).collect();
-        self.open = vec![false; steps.len()];
-        self.screen = Screen::Mode { mode, steps };
+        self.screen = match mode {
+            Mode::Guest => {
+                let host = self.settings.host.unwrap_or(Ipv4Addr::UNSPECIFIED);
+                Screen::Guest {
+                    flow: GuestFlow::new(own, name, host),
+                    own,
+                    host: self
+                        .settings
+                        .host
+                        .map(|host| host.to_string())
+                        .unwrap_or_default(),
+                    refused: None,
+                }
+            }
+            Mode::Host => Screen::Host {
+                steps: HOST_TITLES.iter().map(|title| Step::new(title)).collect(),
+            },
+        };
+        self.open = vec![false; HOST_TITLES.len()];
+    }
+
+    /// Starts the guest's steps for the typed host address, or says why the
+    /// address is refused.
+    fn connect(&mut self, ctx: &egui::Context) {
+        let Screen::Guest {
+            flow,
+            own,
+            host,
+            refused,
+        } = &mut self.screen
+        else {
+            return;
+        };
+        let address = match host.trim().parse::<Ipv4Addr>() {
+            Ok(address) if address != *own && !address.is_unspecified() => address,
+            Ok(_) => {
+                *refused = Some("type the host's VPN address, not your own".into());
+                return;
+            }
+            Err(_) => {
+                *refused = Some(format!("{host:?} is not an IPv4 address"));
+                return;
+            }
+        };
+        *refused = None;
+        *flow = GuestFlow::new(*own, self.settings.name.clone(), address);
+        let actions = flow.apply(GuestInput::Click(Click::Connect), Instant::now());
+        self.settings.host = Some(address);
+        self.save();
+        self.run_guest(ctx, actions);
+    }
+
+    /// Draws the guest's screen and returns the click a row gave, whether
+    /// Connect was pressed and whether Back was.
+    fn guest_screen(&mut self, ui: &mut egui::Ui) -> (Option<Click>, bool, bool) {
+        let Screen::Guest {
+            flow,
+            host,
+            refused,
+            ..
+        } = &mut self.screen
+        else {
+            return (None, false, false);
+        };
+        let busy = flow.busy();
+        let mut connect = false;
+        let mut back = false;
+        ui.horizontal(|ui| {
+            back = ui.add_enabled(!busy, egui::Button::new("Back")).clicked();
+            ui.heading("Join a friend");
+        });
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Host's VPN address");
+            let field =
+                ui.add_enabled(!busy, egui::TextEdit::singleline(host).desired_width(140.0));
+            let enter = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            connect = ui
+                .add_enabled(!busy, egui::Button::new("Connect"))
+                .clicked()
+                || enter;
+        });
+        if let Some(refused) = refused {
+            ui.label(RichText::new(refused.as_str()).color(Color32::from_rgb(220, 80, 70)));
+        }
+        ui.add_space(8.0);
+        let mut click = None;
+        for (number, step) in flow.steps().iter().enumerate() {
+            if let Some(row_click) = row::show(ui, number + 1, step, &mut self.open[number]) {
+                click = Some(row_click);
+            }
+        }
+        if busy {
+            ui.ctx().request_repaint_after(TICK);
+        }
+        (click, connect, back)
     }
 }
 
@@ -244,23 +368,27 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.take_done(&ctx);
+        if let Screen::Guest { flow, .. } = &mut self.screen {
+            flow.apply(GuestInput::Tick, Instant::now());
+        }
         self.hold_close(&ctx);
         let mut start_click = None;
+        let mut guest = (None, false, false);
         let mut back = false;
         let busy = self.busy;
         egui::CentralPanel::default_margins().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 match &mut self.screen {
                     Screen::Start(form) => {
-                        start_click = form.show(ui, busy).map(|click| (click, form.name.clone()));
+                        start_click = form
+                            .show(ui, busy)
+                            .map(|click| (click, form.name.clone(), form.address));
                     }
-                    Screen::Mode { mode, steps } => {
+                    Screen::Guest { .. } => guest = self.guest_screen(ui),
+                    Screen::Host { steps } => {
                         ui.horizontal(|ui| {
                             back = ui.button("Back").clicked();
-                            ui.heading(match mode {
-                                Mode::Host => "Host a game",
-                                Mode::Guest => "Join a friend",
-                            });
+                            ui.heading("Host a game");
                         });
                         ui.add_space(8.0);
                         for (number, step) in steps.iter().enumerate() {
@@ -281,11 +409,19 @@ impl eframe::App for App {
         });
         self.closing_dialog(&ctx);
         match start_click {
-            Some((StartClick::Mode(mode), name)) => self.choose(mode, name),
-            Some((StartClick::RestoreHosts, _)) => self.restore_hosts(&ctx),
-            None => {}
+            Some((StartClick::Mode(mode), name, Some(own))) => self.choose(mode, name, own),
+            Some((StartClick::RestoreHosts, ..)) => self.restore_hosts(&ctx),
+            _ => {}
         }
-        if back {
+        let (click, connect, guest_back) = guest;
+        if let (Some(click), Screen::Guest { flow, .. }) = (click, &mut self.screen) {
+            let actions = flow.apply(GuestInput::Click(click), Instant::now());
+            self.run_guest(&ctx, actions);
+        }
+        if connect {
+            self.connect(&ctx);
+        }
+        if back || guest_back {
             self.screen = Screen::Start(Form::read(self.settings.name.clone()));
         }
     }

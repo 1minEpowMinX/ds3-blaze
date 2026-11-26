@@ -5,8 +5,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod checks;
 mod elevate;
+mod guest;
+mod link;
+mod network;
 mod row;
+mod run;
 mod settings;
 mod start;
 #[expect(

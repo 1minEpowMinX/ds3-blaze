@@ -3,6 +3,7 @@
 //! The window itself runs without administrator rights, so the server it
 //! starts never runs elevated either.
 
+use ds3_blaze_diag::netcheck::Fix;
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
@@ -23,6 +24,39 @@ pub fn cli_path() -> PathBuf {
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(CLI_EXE)))
         .unwrap_or_else(|| PathBuf::from(CLI_EXE))
+}
+
+/// Returns the command line's arguments for `fix`.
+pub fn fix_args(fix: &Fix) -> Vec<String> {
+    let mut args = vec!["fix".to_string()];
+    match fix {
+        Fix::GameRule => args.push("game-rule".into()),
+        Fix::ServerRule(program) => args.extend([
+            "server-rule".into(),
+            "--program".into(),
+            program.display().to_string(),
+        ]),
+        Fix::PrivateProfile(address) => args.extend([
+            "network-profile".into(),
+            "--address".into(),
+            address.to_string(),
+        ]),
+    }
+    args
+}
+
+/// Returns the command line's arguments for pointing the game at `address`
+/// through the hosts file, or back at the EA servers for `None`.
+pub fn hosts_args(address: Option<std::net::Ipv4Addr>) -> Vec<String> {
+    match address {
+        Some(address) => vec![
+            "hosts".into(),
+            "enable".into(),
+            "--address".into(),
+            address.to_string(),
+        ],
+        None => vec!["hosts".into(), "disable".into()],
+    }
 }
 
 /// Returns `args` joined into one command line that `CommandLineToArgvW`
