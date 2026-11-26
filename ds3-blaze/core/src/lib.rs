@@ -4,6 +4,7 @@
 
 pub mod blaze;
 pub mod components;
+pub mod event;
 pub mod fire;
 pub mod game;
 pub mod log;

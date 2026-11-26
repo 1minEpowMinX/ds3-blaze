@@ -8,12 +8,14 @@
 
 mod proxy;
 
+use ds3_blaze_core::event::{self, Event};
 use ds3_blaze_core::log;
 use ds3_blaze_core::server::{self, DEFAULT_BLAZE_PORT, REDIRECTOR_PORT, Server};
 use ds3_blaze_diag::{netcheck, p2pcheck};
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::process::ExitCode;
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 
 /// Display name used when `--name` is not given.
 const DEFAULT_NAME: &str = "DS3Player";
@@ -170,16 +172,57 @@ async fn serve(args: ServeArgs) -> std::io::Result<()> {
     Server::start(config).await?.finished().await
 }
 
+/// Runs `command`, printing the log lines written meanwhile by any task of
+/// this process, and returns its result after the lines still queued.
+async fn printing_log(command: impl Future<Output = std::io::Result<()>>) -> std::io::Result<()> {
+    let mut events = event::subscribe();
+    let result = {
+        let print = async {
+            loop {
+                match events.recv().await {
+                    Ok(event) => print_event(event),
+                    Err(RecvError::Lagged(missed)) => print_missed(missed),
+                    // The sender is a static that is never dropped.
+                    Err(RecvError::Closed) => std::future::pending().await,
+                }
+            }
+        };
+        tokio::select! {
+            result = command => result,
+            never = print => never,
+        }
+    };
+    loop {
+        match events.try_recv() {
+            Ok(event) => print_event(event),
+            Err(TryRecvError::Lagged(missed)) => print_missed(missed),
+            Err(TryRecvError::Empty | TryRecvError::Closed) => return result,
+        }
+    }
+}
+
+/// Prints a log line on stdout; other events are not shown on the console.
+fn print_event(event: Event) {
+    if let Event::Log(line) = event {
+        println!("{line}");
+    }
+}
+
+/// Tells on stderr that `missed` events went by unprinted.
+fn print_missed(missed: u64) {
+    eprintln!("({missed} events not shown here; the log file has every line)");
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.split_first() {
         Some((cmd, rest)) if cmd == "serve" => match parse_serve(rest) {
-            Ok(a) => serve(a).await,
+            Ok(a) => printing_log(serve(a)).await,
             Err(e) => return usage_error(&e),
         },
         Some((cmd, rest)) if cmd == "proxy" => match parse_ea_redirector(rest) {
-            Ok(addr) => run_proxy(addr).await,
+            Ok(addr) => printing_log(run_proxy(addr)).await,
             Err(e) => return usage_error(&e),
         },
         Some((cmd, rest)) if cmd == "ea-check" => match parse_ea_redirector(rest) {

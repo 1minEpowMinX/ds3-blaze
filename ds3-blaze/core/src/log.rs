@@ -1,5 +1,6 @@
-//! Timestamped log lines written to stdout and to a session file.
+//! Timestamped log lines sent as events and written to a session file.
 
+use crate::event::{self, Event, LogLine};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -20,17 +21,18 @@ pub fn init() -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Writes `message` prefixed with local time and `tag` to stdout and, after
-/// [`init`], to the log file.
+/// Writes `message` with local time and `tag` to the log file after [`init`],
+/// and sends it as [`Event::Log`].
 pub fn write(tag: &str, message: &str) {
-    let line = format!(
-        "{} [{tag}] {message}",
-        chrono::Local::now().format("%H:%M:%S%.3f")
-    );
-    println!("{line}");
+    let line = LogLine {
+        time: chrono::Local::now(),
+        tag: tag.to_string(),
+        text: message.to_string(),
+    };
     if let Some(file) = FILE.lock().expect("log mutex").as_mut() {
         let _ = writeln!(file, "{line}");
     }
+    event::send(Event::Log(line));
 }
 
 /// Formats its arguments and passes them to [`write`] under the given tag.
