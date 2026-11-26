@@ -1,12 +1,16 @@
 [package]
 name = "ds3-blaze-diag"
-description = "Network checks between players and the client-side test of a ds3-blaze server"
+description = "Network checks between the players of a ds3-blaze game"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
+tokio.workspace = true
+
+[dev-dependencies]
+# The protocol test: a server in the test process and the game's client side.
 ds3-blaze-core = { path = "../core" }
 blaze-ssl-async.workspace = true
 tdf.workspace = true

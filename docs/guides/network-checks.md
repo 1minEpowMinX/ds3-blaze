@@ -11,4 +11,3 @@ None of the checks needs the game.
 
    Third-party firewalls are only named; the command cannot see their rules.
 2. `ds3-blaze p2p-check --peer <other PC's VPN address>` runs `net-check` first and is then started on both PCs at the same time. Each side sends UDP pings to port 3659 from port 3659, as the game does, and answers the other side's pings. The result shows in which direction packets do not arrive.
-3. `ds3-blaze selftest --host <host's VPN address>` runs on the guest's PC while the host runs `serve`. It goes through the guest's whole path over the VPN: redirector, login, joining a room through matchmaking and `joinGame`, QoS over HTTP and UDP.
