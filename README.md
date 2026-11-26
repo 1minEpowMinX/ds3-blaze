@@ -19,7 +19,7 @@ Protocol analysis, traffic captures and the work plan: [docs/](docs/README.md).
 
 ## Getting it
 
-Release archives are on the repository's Releases page. Each holds `ds3-blaze.exe`, `scripts\hosts.ps1`, this README and the license; the commands below run from the unpacked folder.
+Release archives are on the repository's Releases page. Each holds `ds3-blaze.exe`, this README and the license; the commands below run from the unpacked folder.
 
 GitHub Actions builds every release archive and signs a build provenance attestation for it and for the `ds3-blaze.exe` inside. With the [GitHub CLI](https://cli.github.com/) installed, either file can be checked against this repository's release workflow; the command fails for a file that workflow did not produce:
 
@@ -57,10 +57,10 @@ The server runs on the host's PC.
 
    On a VPN network open to strangers, add `--only-listed`: the server then accepts only your own PC and the `--player` addresses.
 
-2. Point `gosredirector.ea.com` at your own PC from an elevated PowerShell:
+2. Point `gosredirector.ea.com` at your own PC from a PowerShell run as administrator, in the same folder:
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\hosts.ps1 -Enable
+   .\ds3-blaze.exe hosts enable
    ```
 
 3. Start the game, go online in co-op and create a game. A **public** game takes the guest through quick match; a private one takes invites only, so invite the guest through the EA App from inside it.
@@ -69,10 +69,10 @@ If the guest does not get in, the `logs\` folder shows how far the server got. T
 
 ### Guest
 
-1. Point `gosredirector.ea.com` at the host from an elevated PowerShell:
+1. Point `gosredirector.ea.com` at the host from a PowerShell run as administrator, in the unpacked folder:
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\hosts.ps1 -Enable -Address <host's VPN address>
+   .\ds3-blaze.exe hosts enable --address <host's VPN address>
    ```
 
 2. Start the game and go online in co-op. Then either:
@@ -82,7 +82,13 @@ If the guest does not get in, the `logs\` folder shows how far the server got. T
 
 ### Afterwards
 
-Both players run `hosts.ps1 -Disable` to go back to the EA servers. Each run of the script first saves the hosts file as it was, minus any ds3-blaze entries, to `hosts.ds3-blaze.bak` beside it; restoring that copy also returns to the EA servers.
+Both players go back to the EA servers from a PowerShell run as administrator:
+
+```powershell
+.\ds3-blaze.exe hosts disable
+```
+
+`.\ds3-blaze.exe hosts status` tells which servers the game reaches, and needs no administrator rights. Each `enable` and `disable` first saves the hosts file as it was, minus any ds3-blaze entries, to `hosts.ds3-blaze.bak` beside it; restoring that copy also returns to the EA servers.
 
 ## Logs and privacy
 

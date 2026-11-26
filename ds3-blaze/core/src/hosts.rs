@@ -10,7 +10,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Line that opens the section.
@@ -160,26 +160,36 @@ pub fn backup_path() -> PathBuf {
 ///
 /// # Errors
 ///
-/// Returns the error of reading the file.
+/// Returns the error of reading the file, with its path.
 pub fn status() -> io::Result<State> {
-    Ok(state(&fs::read(path())?))
+    let path = path();
+    let file = fs::read(&path).map_err(|err| naming(&path, err))?;
+    Ok(state(&file))
 }
 
 /// Applies `action` to the system hosts file after writing the backup.
 ///
-/// Both writes need an elevated process; without one Windows refuses them with
-/// [`io::ErrorKind::PermissionDenied`].
+/// Both writes need an elevated process; without one Windows refuses the first
+/// with [`io::ErrorKind::PermissionDenied`] and neither file changes.
 ///
 /// # Errors
 ///
-/// Returns the error of reading or writing either file, or the [`Problem`]
-/// that makes the hosts file unsafe to change as [`io::ErrorKind::InvalidData`].
+/// Returns the error of reading or writing either file, with its path, or the
+/// [`Problem`] that makes the hosts file unsafe to change as
+/// [`io::ErrorKind::InvalidData`].
 pub fn apply(action: Action) -> io::Result<()> {
     let path = path();
-    let rewritten = rewrite(&fs::read(&path)?, action)
+    let backup_path = backup_path();
+    let file = fs::read(&path).map_err(|err| naming(&path, err))?;
+    let rewritten = rewrite(&file, action)
         .map_err(|problem| io::Error::new(io::ErrorKind::InvalidData, problem))?;
-    fs::write(backup_path(), &rewritten.backup)?;
-    fs::write(&path, &rewritten.updated)
+    fs::write(&backup_path, &rewritten.backup).map_err(|err| naming(&backup_path, err))?;
+    fs::write(&path, &rewritten.updated).map_err(|err| naming(&path, err))
+}
+
+/// Returns `err` with `path` in front of its message and its kind kept.
+fn naming(path: &Path, err: io::Error) -> io::Error {
+    io::Error::new(err.kind(), format!("{}: {err}", path.display()))
 }
 
 /// Clears the Windows DNS cache with `ipconfig /flushdns`, so the game resolves

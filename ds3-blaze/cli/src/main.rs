@@ -1,5 +1,6 @@
-//! Command line of ds3-blaze: the local Blaze server for Dead Space 3 co-op and
-//! the network checks between two players.
+//! Command line of ds3-blaze: the local Blaze server for Dead Space 3 co-op,
+//! the hosts entry that points the game at it, and the network checks between
+//! two players.
 //!
 //! The commands and their options are declared in [`Command`].
 
@@ -8,6 +9,7 @@ mod proxy;
 
 use clap::{Args, Parser, Subcommand};
 use ds3_blaze_core::event::{self, Event};
+use ds3_blaze_core::hosts::{self, Action, State};
 use ds3_blaze_core::log;
 use ds3_blaze_core::players::Roster;
 use ds3_blaze_core::server::{self, DEFAULT_BLAZE_PORT, Server};
@@ -33,6 +35,10 @@ struct Cli {
 enum Command {
     /// Runs the redirector, the Blaze server and the QoS service.
     Serve(ServeArgs),
+    /// Shows or changes the hosts entry that points the game at a ds3-blaze
+    /// server.
+    #[command(subcommand)]
+    Hosts(HostsCommand),
     /// Shows the adapter traffic to the peer takes, other VPN adapters, the
     /// network profile and the Windows Firewall rules for the game and this
     /// server.
@@ -50,6 +56,23 @@ enum Command {
     /// Checks the SSLv3 connection to EA's redirector and main server.
     #[cfg(feature = "research")]
     EaCheck(EaArgs),
+}
+
+#[derive(Subcommand)]
+enum HostsCommand {
+    /// Points the game at the server at --address; needs a console run as
+    /// administrator.
+    Enable {
+        /// Address of the server: 127.0.0.1 on the host's PC, the host's VPN
+        /// address on a guest's.
+        #[arg(long, value_name = "IP", default_value_t = Ipv4Addr::LOCALHOST)]
+        address: Ipv4Addr,
+    },
+    /// Points the game back at the EA servers; needs a console run as
+    /// administrator.
+    Disable,
+    /// Tells which servers the game reaches.
+    Status,
 }
 
 #[derive(Args)]
@@ -159,6 +182,48 @@ async fn serve(args: ServeArgs) -> io::Result<()> {
     Server::start(config).await?.finished().await
 }
 
+/// Runs a `hosts` subcommand.
+fn hosts(command: HostsCommand) -> io::Result<()> {
+    let action = match command {
+        HostsCommand::Enable { address } => Action::Enable(address),
+        HostsCommand::Disable => Action::Disable,
+        HostsCommand::Status => {
+            match hosts::status()? {
+                State::EaServers => println!("the game reaches the EA servers"),
+                State::Redirected(address) => {
+                    println!("the game reaches the ds3-blaze server at {address}")
+                }
+                State::Broken(problem) => return Err(io::Error::other(problem)),
+            }
+            return Ok(());
+        }
+    };
+    hosts::apply(action).map_err(|err| match err.kind() {
+        io::ErrorKind::PermissionDenied => io::Error::new(
+            err.kind(),
+            format!("{err}; run this command in a console run as administrator"),
+        ),
+        _ => err,
+    })?;
+    println!(
+        "previous hosts file without ds3-blaze entries saved as {}",
+        hosts::backup_path().display()
+    );
+    if let Err(err) = hosts::flush_dns() {
+        eprintln!(
+            "warning: {err}; the game may keep the old address until the DNS cache              expires or Windows restarts"
+        );
+    }
+    match action {
+        Action::Enable(address) => println!(
+            "{} now leads to the ds3-blaze server at {address}",
+            hosts::REDIRECTED.join(", ")
+        ),
+        Action::Disable => println!("ds3-blaze entries removed; the game reaches the EA servers"),
+    }
+    Ok(())
+}
+
 /// Runs net-check against `peer` and fails when it finds a problem.
 fn net_check(peer: Ipv4Addr) -> io::Result<()> {
     match netcheck::diagnose(peer)?.problems {
@@ -212,6 +277,7 @@ fn print_missed(missed: u64) {
 async fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Serve(args) => printing_log(serve(args)).await,
+        Command::Hosts(command) => hosts(command),
         Command::NetCheck { peer } => net_check(peer),
         Command::P2pCheck(args) => p2pcheck::run(args.peer, args.port, args.seconds).await,
         #[cfg(feature = "research")]

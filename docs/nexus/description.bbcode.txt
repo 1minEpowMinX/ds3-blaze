@@ -38,20 +38,20 @@ Both players first check the connection between the two PCs, at the same time, e
 [*]Start the server and leave its window open:
 [code].\ds3-blaze.exe serve --bind 0.0.0.0 --advertise <your VPN address> --name <your name> --player <friend's VPN address>=<friend's name>[/code][/*]
 [*]In a PowerShell window run as administrator, in the same folder:
-[code]powershell -ExecutionPolicy Bypass -File .\scripts\hosts.ps1 -Enable[/code][/*]
+[code].\ds3-blaze.exe hosts enable[/code][/*]
 [*]Start the game, go online in co-op and create a game. A [b]public[/b] game lets your friend in through Quick Match; a [b]private[/b] one takes invites only, so invite them through the EA App.[/*]
 [/list]
 [b]Guest[/b]
 [list=1]
 [*]In a PowerShell window run as administrator, in the archive folder:
-[code]powershell -ExecutionPolicy Bypass -File .\scripts\hosts.ps1 -Enable -Address <host's VPN address>[/code][/*]
+[code].\ds3-blaze.exe hosts enable --address <host's VPN address>[/code][/*]
 [*]Start the game, go online in co-op, and either pick Quick Match or accept the host's invite in the EA App. Quick Match keeps searching for a while, so you may start it a little before the host's game is up.[/*]
 [/list]
 The README inside the archive covers every command and option.
 
 [size=6][b]Going back to EA's servers[/b][/size]
 Both players run, as administrator:
-[code]powershell -ExecutionPolicy Bypass -File .\scripts\hosts.ps1 -Disable[/code]
+[code].\ds3-blaze.exe hosts disable[/code]
 Then the folder can be deleted. While the entry is in place, that PC reaches only the ds3-blaze server, not EA's.
 
 [size=6][b]Troubleshooting[/b][/size]
