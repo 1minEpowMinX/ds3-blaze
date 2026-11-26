@@ -7,20 +7,22 @@
 //! PowerShell modules, read by [`SCRIPT`] as `|`-separated records and parsed
 //! into [`Records`]; both parts work on the parsed records only.
 
+use crate::p2pcheck::GAME_PORT;
 use crate::powershell;
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::path::{Path, PathBuf};
 
 /// PowerShell script printing one record per line; `-Peer`, when given, is the
-/// other player's address.
+/// other player's address, and `-GamePort` the game's P2P port.
 ///
 /// Records: `ROUTE|alias|description|local ip|prefix length|next hop|destination|ifindex`,
 /// `ADAPTER|name|description|ifindex|ipv4 list|network category`,
 /// `FIREWALL|profile|enabled|default inbound action`,
-/// `RULE|program|name|direction|action|enabled|profiles|protocol|local ports`,
-/// `THIRDPARTY|product`.
-const SCRIPT: &str = r#"param([string]$Peer)
+/// `RULE|program|name|direction|action|enabled|profiles|protocol|local ports`
+/// for the rules bound to the game's or a ds3-blaze executable and for those
+/// whose local ports name the game's port, `THIRDPARTY|product`.
+const SCRIPT: &str = r#"param([string]$Peer, [string]$GamePort)
 $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 function Clean($value) { "$value" -replace '[|\r\n]', ' ' }
@@ -43,6 +45,13 @@ Get-NetFirewallApplicationFilter | Where-Object { $_.Program -match '(?i)\\(dead
     $program = $_.Program
     $_ | Get-NetFirewallRule | ForEach-Object {
         $ports = $_ | Get-NetFirewallPortFilter
+        "RULE|$(Clean $program)|$(Clean $_.DisplayName)|$($_.Direction)|$($_.Action)|$($_.Enabled)|$(Clean $_.Profile)|$(Clean $ports.Protocol)|$(Clean $ports.LocalPort)"
+    }
+}
+Get-NetFirewallPortFilter -Protocol UDP | Where-Object { $_.LocalPort -contains $GamePort } | ForEach-Object {
+    $ports = $_
+    $_ | Get-NetFirewallRule | ForEach-Object {
+        $program = ($_ | Get-NetFirewallApplicationFilter).Program
         "RULE|$(Clean $program)|$(Clean $_.DisplayName)|$($_.Direction)|$($_.Action)|$($_.Enabled)|$(Clean $_.Profile)|$(Clean $ports.Protocol)|$(Clean $ports.LocalPort)"
     }
 }
@@ -217,6 +226,14 @@ impl Rule {
         self.protocol.eq_ignore_ascii_case("any") || self.protocol.eq_ignore_ascii_case(protocol)
     }
 
+    /// Returns whether the rule's local ports name `port` itself.
+    fn opens(&self, port: u16) -> bool {
+        let port = port.to_string();
+        self.local_ports
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .any(|listed| listed == port)
+    }
+
     /// Returns whether the rule is an enabled inbound rule for firewall profile
     /// `profile`.
     fn applies_inbound(&self, profile: &str) -> bool {
@@ -310,10 +327,8 @@ impl Records {
 ///
 /// Returns the error of running PowerShell.
 pub fn read(peer: Option<Ipv4Addr>) -> std::io::Result<Records> {
-    let args: Vec<(&str, String)> = peer
-        .map(|peer| ("Peer", peer.to_string()))
-        .into_iter()
-        .collect();
+    let mut args = vec![("GamePort", GAME_PORT.to_string())];
+    args.extend(peer.map(|peer| ("Peer", peer.to_string())));
     Ok(Records::parse(&powershell::run(SCRIPT, &args)?))
 }
 
@@ -480,7 +495,11 @@ fn check_firewall(
             }
         ),
     ));
-    let game = |rule: &Rule| rule.program.to_lowercase().ends_with(GAME_EXE);
+    // The game rule `fix` adds opens the port for any program.
+    let game = |rule: &Rule| {
+        rule.program.to_lowercase().ends_with(GAME_EXE)
+            || (rule.program.eq_ignore_ascii_case("any") && rule.opens(GAME_PORT))
+    };
     check_program(
         records,
         state,
@@ -617,15 +636,18 @@ pub fn route(
             .any(|adapter| adapter.if_index == route.if_index),
         Own::AnyVpn => is_vpn(&route.alias, &route.description),
     };
-    // Under Own::AnyVpn the route's own adapter is the player's, so the other
-    // VPN adapters are the ones besides it.
+    // Under Own::AnyVpn a route through a VPN adapter makes that adapter the
+    // player's, so the other VPN adapters are the ones besides it. A route
+    // through any other adapter leaves every VPN adapter a candidate for the
+    // player's own, none of them another.
     let others: Vec<&Adapter> = match own {
         Own::Address(_) => other_vpn_adapters(records, own),
-        Own::AnyVpn => records
+        Own::AnyVpn if through_own => records
             .adapters
             .iter()
             .filter(|adapter| adapter.is_vpn() && adapter.if_index != route.if_index)
             .collect(),
+        Own::AnyVpn => Vec::new(),
     };
     if through_own {
         findings.push(Finding::new(Severity::Ok, leaves));
@@ -670,6 +692,18 @@ pub fn route(
                 ),
             },
         ));
+        if *own == Own::AnyVpn {
+            for adapter in &own_adapters {
+                findings.push(Finding::new(
+                    Severity::Note,
+                    format!(
+                        "VPN adapter {} is up with {}: the other player's address should be on its network",
+                        adapter.label(),
+                        adapter.addresses()
+                    ),
+                ));
+            }
+        }
     }
     // Without an adapter of the player's, the local part reports the missing
     // address, and every VPN adapter would count as another.
@@ -847,6 +881,14 @@ mod tests {
                 "{own:?}: {findings:?}"
             );
         }
+        // Without a chosen address the VPN adapter is the player's own, not
+        // the cause.
+        let findings = route(&records, PEER, &Own::AnyVpn, None);
+        assert!(
+            !findings.iter().any(|f| f.text.contains("likely cause")),
+            "{findings:?}"
+        );
+        assert!(mentions(&findings, Severity::Note, "\"Radmin VPN\""));
     }
 
     #[test]
@@ -1065,5 +1107,46 @@ mod tests {
         let findings = local(&records, &guest);
         assert!(!findings.iter().any(|f| f.text.contains("Blaze and QoS")));
         assert!(mentions(&findings, Severity::Warning, "deadspace3.exe"));
+    }
+
+    #[test]
+    fn port_rule_without_a_program_counts_as_the_games() {
+        let guest = Setup {
+            own: Own::Address(OWN),
+            server: None,
+        };
+        let mut records = records(None, vec![radmin()]);
+        records.firewall = public_firewall(true);
+        let mut port_rule = rule("Any", "UDP", true);
+        port_rule.local_ports = format!("{} {GAME_PORT}", GAME_PORT - 1);
+        records.rules = vec![port_rule.clone()];
+        let findings = local(&records, &guest);
+        assert!(
+            mentions(
+                &findings,
+                Severity::Ok,
+                "allows inbound UDP to deadspace3.exe"
+            ),
+            "{findings:?}"
+        );
+
+        // A port that only starts with the game's does not count.
+        port_rule.local_ports = format!("{GAME_PORT}0");
+        records.rules = vec![port_rule.clone()];
+        assert!(mentions(
+            &local(&records, &guest),
+            Severity::Warning,
+            "deadspace3.exe"
+        ));
+
+        // Nor does a rule for another program on the same port.
+        port_rule.program = r"C:\Tools\other.exe".into();
+        port_rule.local_ports = GAME_PORT.to_string();
+        records.rules = vec![port_rule];
+        assert!(mentions(
+            &local(&records, &guest),
+            Severity::Warning,
+            "deadspace3.exe"
+        ));
     }
 }

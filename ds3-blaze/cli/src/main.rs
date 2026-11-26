@@ -13,11 +13,13 @@ use ds3_blaze_core::hosts::{self, Action, State};
 use ds3_blaze_core::log;
 use ds3_blaze_core::players::Roster;
 use ds3_blaze_core::server::{self, DEFAULT_BLAZE_PORT, Server};
-use ds3_blaze_diag::netcheck::{self, Finding, Own, Setup, Severity};
+use ds3_blaze_diag::fix;
+use ds3_blaze_diag::netcheck::{self, Finding, Fix, Own, Setup, Severity};
 use ds3_blaze_diag::p2pcheck;
 
 use std::io;
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 
@@ -55,12 +57,35 @@ enum Command {
     /// Runs net-check, then exchanges UDP pings with the other player; run it
     /// on both PCs at once.
     P2pCheck(P2pArgs),
+    /// Changes a Windows network setting that net-check finds wrong; needs a
+    /// console run as administrator.
+    #[command(subcommand)]
+    Fix(FixCommand),
     /// Relays the game to EA's Blaze servers and logs every message.
     #[cfg(feature = "research")]
     Proxy(EaArgs),
     /// Checks the SSLv3 connection to EA's redirector and main server.
     #[cfg(feature = "research")]
     EaCheck(EaArgs),
+}
+
+#[derive(Subcommand)]
+enum FixCommand {
+    /// Adds a Windows Firewall rule allowing inbound UDP on the game's P2P port.
+    GameRule,
+    /// Adds a Windows Firewall rule allowing inbound traffic to the program
+    /// that runs the server.
+    ServerRule {
+        /// The program; the default is this executable.
+        #[arg(long, value_name = "PATH")]
+        program: Option<PathBuf>,
+    },
+    /// Sets the network of the adapter holding --address to Private.
+    NetworkProfile {
+        /// This PC's VPN address.
+        #[arg(long, value_name = "IP")]
+        address: Ipv4Addr,
+    },
 }
 
 #[derive(Subcommand)]
@@ -221,13 +246,7 @@ fn hosts(command: HostsCommand) -> io::Result<()> {
             return Ok(());
         }
     };
-    hosts::apply(action).map_err(|err| match err.kind() {
-        io::ErrorKind::PermissionDenied => io::Error::new(
-            err.kind(),
-            format!("{err}; run this command in a console run as administrator"),
-        ),
-        _ => err,
-    })?;
+    hosts::apply(action).map_err(needing_administrator)?;
     println!(
         "previous hosts file without ds3-blaze entries saved as {}",
         hosts::backup_path().display()
@@ -284,6 +303,44 @@ fn net_check(peer: Ipv4Addr, address: Option<Ipv4Addr>) -> io::Result<()> {
     }
 }
 
+/// Returns `err` with the hint to run the command as administrator when its
+/// kind is [`io::ErrorKind::PermissionDenied`], and `err` itself otherwise.
+fn needing_administrator(err: io::Error) -> io::Error {
+    match err.kind() {
+        io::ErrorKind::PermissionDenied => io::Error::new(
+            err.kind(),
+            format!("{err}; run this command in a console run as administrator"),
+        ),
+        _ => err,
+    }
+}
+
+/// Carries out the fix `command` names.
+fn run_fix(command: FixCommand) -> io::Result<()> {
+    let fix = match command {
+        FixCommand::GameRule => Fix::GameRule,
+        FixCommand::ServerRule { program } => {
+            Fix::ServerRule(program.map_or_else(std::env::current_exe, Ok)?)
+        }
+        FixCommand::NetworkProfile { address } => Fix::PrivateProfile(address),
+    };
+    fix::apply(&fix).map_err(needing_administrator)?;
+    println!("done; net-check shows the new state");
+    Ok(())
+}
+
+/// Returns the command line that carries out `fix`.
+fn fix_command(fix: &Fix) -> String {
+    let exe = env!("CARGO_BIN_NAME");
+    match fix {
+        Fix::GameRule => format!("{exe} fix game-rule"),
+        Fix::ServerRule(program) => {
+            format!("{exe} fix server-rule --program \"{}\"", program.display())
+        }
+        Fix::PrivateProfile(address) => format!("{exe} fix network-profile --address {address}"),
+    }
+}
+
 /// Prints each finding on a line of its own, marked with its severity.
 fn print_findings(findings: &[Finding]) {
     for finding in findings {
@@ -294,6 +351,9 @@ fn print_findings(findings: &[Finding]) {
             Severity::Problem => "problem",
         };
         println!("  [{mark}] {}", finding.text);
+        if let Some(fix) = &finding.fix {
+            println!("          fix: {}", fix_command(fix));
+        }
     }
 }
 
@@ -343,6 +403,7 @@ async fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Serve(args) => printing_log(serve(args)).await,
         Command::Hosts(command) => hosts(command),
+        Command::Fix(command) => run_fix(command),
         Command::NetCheck { peer, address } => net_check(peer, address),
         Command::P2pCheck(args) => {
             // Problems the check finds do not stop the exchange, which shows
