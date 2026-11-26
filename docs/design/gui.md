@@ -49,7 +49,18 @@ The `vpn` module lists IPv4 adapters through `GetAdaptersAddresses`, with the sa
 
 ### Network findings and fixes
 
-`netcheck` returns `Vec<Finding { severity, text, fix }>` instead of printing. It is split in two: a local part (VPN adapter present, its network profile, firewall rules for the game and for ds3-blaze), which needs no peer, and a route part for a given peer address.
+`netcheck` returns `Vec<Finding { severity, text, fix }>` instead of printing. It is split in two: a local part (VPN adapter present, other VPN adapters that are up, its network profile, firewall rules for the game and for ds3-blaze), which needs no peer, and a route part for a given peer address. Both work on parsed records, apart from the PowerShell call that reads them, so their rules have unit tests without the machine's network state.
+
+### Route to the peer
+
+The route part takes the peer's address and the player's own VPN address, the one chosen on the start screen. Its checks are today's `check_route`, tied to the chosen address:
+
+- Windows has a route to the peer.
+- The route leaves through the adapter that holds the chosen address, and the peer is on that adapter's network, with no gateway in between. The comparison is with the chosen adapter rather than with any adapter whose name looks like a VPN (`is_vpn`), so another tunnel that takes over the peer's addresses is caught whatever its adapter is called.
+- A UDP socket connected to the peer picks the chosen address as its source.
+- Other VPN adapters that are up are listed: as a note when the route passes, as the likely cause when it does not.
+
+The route part sees only routing. A VPN client that drops traffic with filters while the routes stay intact (a kill switch) shows only in the exchange, so a `p2p` run that gets no answer while another VPN adapter is up names that adapter as the likely cause.
 
 `fix` names an action the GUI can offer as a button: `Fix::GameRule` (inbound UDP on `GAME_PORT`), `Fix::ServerRule` (inbound for the executable that runs the server, needed on the host) and `Fix::PrivateProfile` (the VPN adapter's network set to Private). Each is carried out by the CLI command `fix`, which the GUI starts elevated. After a fix the GUI runs the local part again, and the new findings show whether it worked.
 
@@ -80,7 +91,7 @@ The full client scenario of today's `selftest` (login, room creation, the second
 
 ### Start screen
 
-The start screen asks for the player's name and VPN address (from `vpn`, VPN adapters first) and offers two modes: host a game, or join a friend. It shows the state of the hosts file. When ds3-blaze entries are present while no server or connection is active, as after a crash, it offers to restore the EA servers.
+The start screen asks for the player's name and VPN address (from `vpn`, VPN adapters first) and offers two modes: host a game, or join a friend. Every other VPN adapter that is up is marked, with a note that another VPN can take over the other player's traffic. It shows the state of the hosts file. When ds3-blaze entries are present while no server or connection is active, as after a crash, it offers to restore the EA servers.
 
 ### Step rows
 
@@ -94,11 +105,11 @@ The summary carries the information a player watches during play, so a collapsed
 
 | Step | Summary when done | Expanded |
 |---|---|---|
-| Your VPN address | address and adapter; "Start server" | |
+| Your VPN address | address and adapter; "Start server" | the local part's findings with fixes |
 | Point game at this PC | hosts → 127.0.0.1 | the entry, the backup, "Restore EA servers" |
 | Server | listening on the VPN address | the three listeners; `reach` against the VPN address |
 | Players | who is connected, how many are waiting | names editable in place, "Allow" for refused addresses, "Only players I allow" |
-| Direct link to the guest | both directions and latency | findings with fixes, "Check again" |
+| Direct link to the guest | both directions and latency | the route part for the guest's address, the exchange, findings with fixes, "Check again" |
 | Room | visibility, players, chapter | chapter and restore point, how the guest joined; before a room exists, the step tells the host to start the game and create one |
 | Log | the latest line | recent lines, "Open logs folder" |
 
@@ -108,15 +119,17 @@ The summary carries the information a player watches during play, so a collapsed
 
 | Step | Summary when done | Expanded |
 |---|---|---|
-| Host's VPN address | the address; "Connect" | |
+| Host's VPN address | the address and the adapter the route takes; "Connect" | the local part and the route part for the host's address, with fixes |
 | Point game at host | hosts → the host's address | the entry, the backup, "Restore EA servers" |
 | Reach host's server | all services answer | each `reach` stage with its result |
-| Direct link to host | both directions and latency | findings with fixes, "Check again" |
+| Direct link to host | both directions and latency | the exchange, findings with fixes, "Check again" |
 | Start Dead Space 3 | online co-op | quick match for a public game, the EA App invite for a private one |
 
 "Disconnect and restore hosts" removes the hosts entry.
 
 ### Order of the steps
+
+The guest's "Connect" runs the route part before the hosts file changes. A route problem stops the steps after it, since the hosts entry, `reach` and the exchange would all go through the same wrong route; the row says what to change and "Connect" runs it again. The host learns the guest's address only from the guest's first connection, so the host's route part runs alongside the exchange that connection starts, and the exchange still begins when the guest's does.
 
 The direct link step comes before the game step in both modes because the check needs `GAME_PORT`. While it runs, the row says not to start the game until the countdown ends. The host's room step says the same until the check with the guest has finished.
 
@@ -145,8 +158,8 @@ Closing the window while the hosts file points at ds3-blaze asks whether to rest
 | `serve` | the server, with today's options |
 | `hosts enable --address IP`, `hosts disable`, `hosts status` | the hosts entry; `enable` and `disable` need an elevated console |
 | `fix game-rule`, `fix server-rule`, `fix network-profile` | the network fixes the GUI offers |
-| `net-check --peer IP` | the network findings |
-| `p2p-check --peer IP` | the P2P exchange |
+| `net-check --peer IP [--address IP]` | the network findings; `--address` is the player's own VPN address, and without it the route is checked against any adapter `is_vpn` recognises |
+| `p2p-check --peer IP [--address IP]` | the P2P exchange, after the same findings |
 | `reach --host IP` | the guest's server check |
 | `proxy`, `ea-check` | research only, built with the feature `research` |
 
@@ -173,7 +186,8 @@ The README and the Nexus page still share the few sentences of the short start, 
 
 - `hosts::rewrite`: with and without a byte order mark, ANSI text, CRLF and LF, an empty file, a file without a final line break, legacy-marker lines, a section without an end line, repeated `enable`.
 - `PlayerBook`: admission and naming rules as `Config::admits` and `Config::name_for` have them now, and changes while sessions are open.
-- `p2p`: two exchanges on the loopback address with different ports, started a moment apart; one exchange whose port is already taken.
+- The route part on parsed records: no route; the route through an adapter other than the chosen one, including one that `is_vpn` recognises; a gateway in between; a source address other than the chosen one; another VPN adapter up beside a passing route.
+- `p2p`: two exchanges on the loopback address with different ports, started a moment apart; one exchange whose port is already taken; the failure text of an exchange without answers, with and without another VPN adapter up.
 - The host's trigger: a first connection from an address starts one run, a second connection from it starts none, a refused connection starts one.
 - `reach` against a server started in the test.
 - The protocol test described above.
@@ -187,7 +201,7 @@ Each stage is a branch of its own, merged into `main` when CI passes. A stage th
 2. `Server::start` with ports in the configuration, the protocol test, the `selftest` command and its CI step removed.
 3. Events, snapshot and `PlayerBook`; the core stops printing and the CLI prints the events.
 4. `clap`, the `hosts` module and `hosts` command, `scripts/hosts.ps1` removed.
-5. Diagnostics: findings and fixes, the `fix` command, `p2p` events, `reach`.
+5. Diagnostics: findings and fixes, the route part tied to the chosen address, the `fix` command, `p2p` events, `reach`.
 6. The GUI, and the renaming of the executables.
 7. README, Nexus page, network-checks and the docs index rewritten for the GUI.
 
