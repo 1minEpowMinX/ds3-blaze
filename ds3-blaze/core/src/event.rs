@@ -4,6 +4,7 @@
 //! from every module and every task, and a receiver sees the lines of all of them.
 
 use std::fmt;
+use std::net::Ipv4Addr;
 use std::sync::LazyLock;
 use tokio::sync::broadcast;
 
@@ -21,6 +22,9 @@ pub enum Event {
     /// The server's state changed; [`crate::server::ServerHandle::snapshot`]
     /// returns the new one.
     Changed,
+    /// A Blaze connection arrived from this address, before the player book
+    /// decided whether to admit it.
+    Connection(Ipv4Addr),
 }
 
 /// One log line: local time, tag and text.

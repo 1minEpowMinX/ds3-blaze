@@ -3,12 +3,16 @@
 
 use crate::elevate;
 use crate::guest::{GuestAction, GuestFlow, GuestInput};
+use crate::host::{HostAction, HostFlow, HostInput};
 use crate::row;
 use crate::run;
 use crate::settings::{self, Mode, Settings};
 use crate::start::{self, Form, StartClick};
 use crate::step::{Click, Step};
+use ds3_blaze_core::event::Event;
 use ds3_blaze_core::hosts;
+use ds3_blaze_core::log;
+use ds3_blaze_core::server::{Config, Ports, Server, ServerHandle};
 use eframe::egui::{self, Color32, RichText};
 use std::future::Future;
 use std::io;
@@ -16,26 +20,19 @@ use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-
-/// Titles of the host's steps, in the order they run.
-const HOST_TITLES: [&str; 7] = [
-    "Your VPN address",
-    "Point game at this PC",
-    "Server",
-    "Players",
-    "Direct link to the guest",
-    "Room",
-    "Log",
-];
+use tokio::sync::broadcast::error::RecvError;
 
 /// How often a running countdown is drawn again.
 const TICK: Duration = Duration::from_secs(1);
+
+/// Colour of errors the window shows.
+const ERROR: Color32 = Color32::from_rgb(220, 80, 70);
 
 /// What the window shows.
 enum Screen {
     Start(Form),
     Guest {
-        flow: GuestFlow,
+        flow: Box<GuestFlow>,
         own: Ipv4Addr,
         /// The host's address as typed.
         host: String,
@@ -43,7 +40,7 @@ enum Screen {
         refused: Option<String>,
     },
     Host {
-        steps: Vec<Step>,
+        flow: Box<HostFlow>,
     },
 }
 
@@ -53,6 +50,10 @@ enum Done {
     /// with the command line's exit code.
     Restored(io::Result<i32>),
     Guest(GuestInput),
+    Host(HostInput),
+    ServerStarted(io::Result<ServerHandle>),
+    /// The running server's state changed.
+    Changed,
 }
 
 /// Where closing the window stands.
@@ -80,16 +81,20 @@ pub struct App {
     runtime: tokio::runtime::Runtime,
     done_sender: mpsc::Sender<Done>,
     done: mpsc::Receiver<Done>,
+    /// The host's running server.
+    server: Option<ServerHandle>,
+    /// The log file, or the error of opening it.
+    log: Result<PathBuf, String>,
     /// Whether a restore from the start screen or the closing dialog runs.
     busy: bool,
-    /// What that restore left to say.
+    /// What that restore or the last window-side action left to say.
     message: Option<String>,
     closing: Closing,
 }
 
 impl App {
     /// Returns the window with the settings from [`settings::path`] and the
-    /// start screen.
+    /// start screen, logging to a new file.
     ///
     /// # Errors
     ///
@@ -108,6 +113,8 @@ impl App {
             runtime: tokio::runtime::Runtime::new()?,
             done_sender,
             done,
+            server: None,
+            log: log::init().map_err(|err| format!("the log file cannot be opened: {err}")),
             busy: false,
             message: None,
             closing: Closing::No,
@@ -151,16 +158,142 @@ impl App {
         }
     }
 
+    /// Carries out the host's `actions`: those on the server and the
+    /// settings here, the others on the runtime.
+    fn run_host(&mut self, ctx: &egui::Context, actions: Vec<HostAction>) {
+        for action in actions {
+            match action {
+                HostAction::StartServer { advertise, roster } => {
+                    let send = self.sink(ctx, Done::ServerStarted);
+                    self.spawn(async move {
+                        send(
+                            Server::start(Config {
+                                // The host's game connects through 127.0.0.1,
+                                // the guest's through the VPN address.
+                                bind: Ipv4Addr::UNSPECIFIED,
+                                advertise,
+                                ports: Ports::default(),
+                                players: roster,
+                            })
+                            .await,
+                        )
+                    });
+                }
+                HostAction::Rename(ip, name) => {
+                    if let Some(server) = &self.server {
+                        server.players().set_name(ip, name);
+                    }
+                }
+                HostAction::Allow(ip) => {
+                    if let Some(server) = &self.server {
+                        server.players().set_allowed(ip, true);
+                    }
+                }
+                HostAction::OnlyAllowed(on) => {
+                    if let Some(server) = &self.server {
+                        server.players().set_only_allowed(on);
+                    }
+                }
+                HostAction::SaveNames(names) => {
+                    self.settings.players = names;
+                    self.save();
+                }
+                HostAction::OpenLogs => self.open_logs(),
+                HostAction::StopAndRestore => {
+                    if let Some(server) = self.server.take() {
+                        server.stop();
+                    }
+                    let send = self.sink(ctx, Done::Host);
+                    self.spawn(async move {
+                        send(HostInput::Elevated(
+                            elevate::run_cli(elevate::hosts_args(None)).await,
+                        ))
+                    });
+                }
+                action => {
+                    let send = self.sink(ctx, Done::Host);
+                    self.spawn(run::host(action, send));
+                }
+            }
+        }
+    }
+
+    /// Opens the folder of the log file in Explorer.
+    fn open_logs(&mut self) {
+        let folder = self
+            .log
+            .as_ref()
+            .ok()
+            .and_then(|path| path.parent().map(PathBuf::from));
+        self.message = match folder {
+            Some(folder) => std::process::Command::new("explorer")
+                .arg(&folder)
+                .spawn()
+                .err()
+                .map(|err| format!("{} cannot be opened: {err}", folder.display())),
+            None => self.log.as_ref().err().cloned(),
+        };
+    }
+
+    /// Keeps the started server and forwards its events to the next frames.
+    fn server_started(&mut self, ctx: &egui::Context, result: io::Result<ServerHandle>) {
+        let Screen::Host { flow } = &mut self.screen else {
+            return;
+        };
+        let now = Instant::now();
+        let handle = match result {
+            Ok(handle) => handle,
+            Err(err) => {
+                let actions = flow.apply(HostInput::Started(Err(err)), now);
+                self.run_host(ctx, actions);
+                return;
+            }
+        };
+        let mut events = handle.events();
+        let mut actions = flow.apply(HostInput::Started(Ok(handle.ports())), now);
+        actions.extend(flow.apply(HostInput::Snapshot(handle.snapshot()), now));
+        self.server = Some(handle);
+        let send_host = self.sink(ctx, Done::Host);
+        let send_changed = self.sink(ctx, |()| Done::Changed);
+        self.spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(Event::Log(line)) => send_host(HostInput::Log(line.to_string())),
+                    Ok(Event::Connection(ip)) => send_host(HostInput::Connection(ip)),
+                    Ok(Event::Changed) => send_changed(()),
+                    // A later snapshot shows whatever the missed events changed.
+                    Err(RecvError::Lagged(_)) => send_changed(()),
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+        self.run_host(ctx, actions);
+    }
+
     /// Takes the results of the background work that ended.
     fn take_done(&mut self, ctx: &egui::Context) {
         while let Ok(done) = self.done.try_recv() {
+            let now = Instant::now();
             match done {
                 Done::Restored(result) => self.restored(ctx, result),
+                // A result for a screen that was left is dropped.
                 Done::Guest(input) => {
-                    // A result for a guest screen that was left is dropped.
                     if let Screen::Guest { flow, .. } = &mut self.screen {
-                        let actions = flow.apply(input, Instant::now());
+                        let actions = flow.apply(input, now);
                         self.run_guest(ctx, actions);
+                    }
+                }
+                Done::Host(input) => {
+                    if let Screen::Host { flow } = &mut self.screen {
+                        let actions = flow.apply(input, now);
+                        self.run_host(ctx, actions);
+                    }
+                }
+                Done::ServerStarted(result) => self.server_started(ctx, result),
+                Done::Changed => {
+                    if let (Some(server), Screen::Host { flow }) = (&self.server, &mut self.screen)
+                    {
+                        flow.apply(HostInput::Snapshot(server.snapshot()), now);
                     }
                 }
             }
@@ -238,6 +371,8 @@ impl App {
             });
         });
         if restore {
+            // The server stops before the hosts file stops pointing at it.
+            self.server = None;
             self.closing = Closing::Restoring;
             self.restore_hosts(ctx);
         } else if close {
@@ -264,24 +399,30 @@ impl App {
         self.settings.mode = Some(mode);
         self.save();
         self.screen = match mode {
-            Mode::Guest => {
-                let host = self.settings.host.unwrap_or(Ipv4Addr::UNSPECIFIED);
-                Screen::Guest {
-                    flow: GuestFlow::new(own, name, host),
+            Mode::Guest => Screen::Guest {
+                flow: Box::new(GuestFlow::new(
                     own,
-                    host: self
-                        .settings
-                        .host
-                        .map(|host| host.to_string())
-                        .unwrap_or_default(),
-                    refused: None,
-                }
-            }
+                    name,
+                    self.settings.host.unwrap_or(Ipv4Addr::UNSPECIFIED),
+                )),
+                own,
+                host: self
+                    .settings
+                    .host
+                    .map(|host| host.to_string())
+                    .unwrap_or_default(),
+                refused: None,
+            },
             Mode::Host => Screen::Host {
-                steps: HOST_TITLES.iter().map(|title| Step::new(title)).collect(),
+                flow: Box::new(HostFlow::new(own, name, self.settings.players.clone())),
             },
         };
-        self.open = vec![false; HOST_TITLES.len()];
+        let rows = match &self.screen {
+            Screen::Guest { flow, .. } => flow.steps().len(),
+            Screen::Host { flow } => flow.steps().len(),
+            Screen::Start(_) => 0,
+        };
+        self.open = vec![false; rows];
     }
 
     /// Starts the guest's steps for the typed host address, or says why the
@@ -308,56 +449,76 @@ impl App {
             }
         };
         *refused = None;
-        *flow = GuestFlow::new(*own, self.settings.name.clone(), address);
+        **flow = GuestFlow::new(*own, self.settings.name.clone(), address);
         let actions = flow.apply(GuestInput::Click(Click::Connect), Instant::now());
         self.settings.host = Some(address);
         self.save();
         self.run_guest(ctx, actions);
     }
 
-    /// Draws the guest's screen and returns the click a row gave, whether
-    /// Connect was pressed and whether Back was.
-    fn guest_screen(&mut self, ui: &mut egui::Ui) -> (Option<Click>, bool, bool) {
-        let Screen::Guest {
-            flow,
-            host,
-            refused,
-            ..
-        } = &mut self.screen
-        else {
-            return (None, false, false);
-        };
-        let busy = flow.busy();
-        let mut connect = false;
-        let mut back = false;
-        ui.horizontal(|ui| {
-            back = ui.add_enabled(!busy, egui::Button::new("Back")).clicked();
-            ui.heading("Join a friend");
-        });
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label("Host's VPN address");
-            let field =
-                ui.add_enabled(!busy, egui::TextEdit::singleline(host).desired_width(140.0));
-            let enter = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            connect = ui
-                .add_enabled(!busy, egui::Button::new("Connect"))
-                .clicked()
-                || enter;
-        });
-        if let Some(refused) = refused {
-            ui.label(RichText::new(refused.as_str()).color(Color32::from_rgb(220, 80, 70)));
-        }
-        ui.add_space(8.0);
+    /// Draws `steps` as rows and returns the click one of them gave.
+    fn rows(ui: &mut egui::Ui, steps: &[Step], open: &mut [bool]) -> Option<Click> {
         let mut click = None;
-        for (number, step) in flow.steps().iter().enumerate() {
-            if let Some(row_click) = row::show(ui, number + 1, step, &mut self.open[number]) {
+        for (number, step) in steps.iter().enumerate() {
+            if let Some(row_click) = row::show(ui, number + 1, step, &mut open[number]) {
                 click = Some(row_click);
             }
         }
-        if busy {
-            ui.ctx().request_repaint_after(TICK);
-        }
+        click
+    }
+
+    /// Draws the current mode's screen and returns the click a row gave,
+    /// whether Connect was pressed and whether Back was.
+    fn mode_screen(&mut self, ui: &mut egui::Ui) -> (Option<Click>, bool, bool) {
+        let mut connect = false;
+        let mut back = false;
+        let click = match &mut self.screen {
+            Screen::Start(_) => None,
+            Screen::Guest {
+                flow,
+                host,
+                refused,
+                ..
+            } => {
+                let busy = flow.busy();
+                ui.horizontal(|ui| {
+                    back = ui.add_enabled(!busy, egui::Button::new("Back")).clicked();
+                    ui.heading("Join a friend");
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Host's VPN address");
+                    let field = ui
+                        .add_enabled(!busy, egui::TextEdit::singleline(host).desired_width(140.0));
+                    let enter =
+                        field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    connect = ui
+                        .add_enabled(!busy, egui::Button::new("Connect"))
+                        .clicked()
+                        || enter;
+                });
+                if let Some(refused) = refused {
+                    ui.label(RichText::new(refused.as_str()).color(ERROR));
+                }
+                ui.add_space(8.0);
+                if busy {
+                    ui.ctx().request_repaint_after(TICK);
+                }
+                Self::rows(ui, flow.steps(), &mut self.open)
+            }
+            Screen::Host { flow } => {
+                let leave = !flow.busy() && !flow.serving();
+                ui.horizontal(|ui| {
+                    back = ui.add_enabled(leave, egui::Button::new("Back")).clicked();
+                    ui.heading("Host a game");
+                });
+                ui.add_space(8.0);
+                if flow.busy() {
+                    ui.ctx().request_repaint_after(TICK);
+                }
+                Self::rows(ui, flow.steps(), &mut self.open)
+            }
+        };
         (click, connect, back)
     }
 }
@@ -368,33 +529,27 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.take_done(&ctx);
-        if let Screen::Guest { flow, .. } = &mut self.screen {
-            flow.apply(GuestInput::Tick, Instant::now());
+        match &mut self.screen {
+            Screen::Guest { flow, .. } => {
+                flow.apply(GuestInput::Tick, Instant::now());
+            }
+            Screen::Host { flow } => {
+                flow.apply(HostInput::Tick, Instant::now());
+            }
+            Screen::Start(_) => {}
         }
         self.hold_close(&ctx);
         let mut start_click = None;
-        let mut guest = (None, false, false);
-        let mut back = false;
+        let mut mode = (None, false, false);
         let busy = self.busy;
         egui::CentralPanel::default_margins().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                match &mut self.screen {
-                    Screen::Start(form) => {
-                        start_click = form
-                            .show(ui, busy)
-                            .map(|click| (click, form.name.clone(), form.address));
-                    }
-                    Screen::Guest { .. } => guest = self.guest_screen(ui),
-                    Screen::Host { steps } => {
-                        ui.horizontal(|ui| {
-                            back = ui.button("Back").clicked();
-                            ui.heading("Host a game");
-                        });
-                        ui.add_space(8.0);
-                        for (number, step) in steps.iter().enumerate() {
-                            row::show(ui, number + 1, step, &mut self.open[number]);
-                        }
-                    }
+                if let Screen::Start(form) = &mut self.screen {
+                    start_click = form
+                        .show(ui, busy)
+                        .map(|click| (click, form.name.clone(), form.address));
+                } else {
+                    mode = self.mode_screen(ui);
                 }
                 if busy {
                     ui.horizontal(|ui| {
@@ -403,7 +558,7 @@ impl eframe::App for App {
                     });
                 }
                 for error in [&self.message, &self.save_error].into_iter().flatten() {
-                    ui.label(RichText::new(error).color(Color32::from_rgb(220, 80, 70)));
+                    ui.label(RichText::new(error).color(ERROR));
                 }
             });
         });
@@ -413,15 +568,25 @@ impl eframe::App for App {
             Some((StartClick::RestoreHosts, ..)) => self.restore_hosts(&ctx),
             _ => {}
         }
-        let (click, connect, guest_back) = guest;
-        if let (Some(click), Screen::Guest { flow, .. }) = (click, &mut self.screen) {
-            let actions = flow.apply(GuestInput::Click(click), Instant::now());
-            self.run_guest(&ctx, actions);
+        let (click, connect, back) = mode;
+        if let Some(click) = click {
+            let now = Instant::now();
+            match &mut self.screen {
+                Screen::Guest { flow, .. } => {
+                    let actions = flow.apply(GuestInput::Click(click), now);
+                    self.run_guest(&ctx, actions);
+                }
+                Screen::Host { flow } => {
+                    let actions = flow.apply(HostInput::Click(click), now);
+                    self.run_host(&ctx, actions);
+                }
+                Screen::Start(_) => {}
+            }
         }
         if connect {
             self.connect(&ctx);
         }
-        if back || guest_back {
+        if back {
             self.screen = Screen::Start(Form::read(self.settings.name.clone()));
         }
     }

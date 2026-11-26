@@ -2,6 +2,7 @@
 
 use crate::elevate;
 use crate::guest::{GuestAction, GuestInput};
+use crate::host::{HostAction, HostInput};
 use crate::network;
 use ds3_blaze_core::hosts;
 use ds3_blaze_core::server::Ports;
@@ -45,7 +46,7 @@ pub async fn exchange(peer: Ipv4Addr, progress: impl Fn(Progress)) -> io::Result
 pub async fn guest(action: GuestAction, send: impl Fn(GuestInput) + Send + Sync) {
     let input = match action {
         GuestAction::CheckNetwork { own, peer } => GuestInput::Network(
-            blocking(move || network::check(own, peer, None))
+            blocking(move || network::check(own, Some(peer), None))
                 .await
                 .and_then(|result| result),
         ),
@@ -67,6 +68,52 @@ pub async fn guest(action: GuestAction, send: impl Fn(GuestInput) + Send + Sync)
         GuestAction::Exchange { peer } => {
             GuestInput::Exchange(exchange(peer, |report| send(GuestInput::Progress(report))).await)
         }
+    };
+    send(input);
+}
+
+/// Carries out the host's `action` and hands each result to `send`; the
+/// actions on the server and the settings are left to the window, which
+/// holds them.
+pub async fn host(action: HostAction, send: impl Fn(HostInput) + Send + Sync) {
+    // The server runs inside the window's process, so its firewall rules are
+    // the rules of the running executable.
+    let server = std::env::current_exe().ok();
+    let input = match action {
+        HostAction::CheckNetwork { own } => HostInput::Network(
+            blocking(move || network::check(own, None, server))
+                .await
+                .and_then(|result| result),
+        ),
+        HostAction::Route { own, peer } => HostInput::Route(
+            blocking(move || network::check(own, Some(peer), server))
+                .await
+                .and_then(|result| result),
+        ),
+        HostAction::ReadHosts => {
+            HostInput::Hosts(blocking(hosts::status).await.and_then(|result| result))
+        }
+        HostAction::WriteHosts => HostInput::Elevated(
+            elevate::run_cli(elevate::hosts_args(Some(Ipv4Addr::LOCALHOST))).await,
+        ),
+        HostAction::ApplyFix(fix) => {
+            HostInput::Elevated(elevate::run_cli(elevate::fix_args(&fix)).await)
+        }
+        // The host's game reaches its server through 127.0.0.1, and the
+        // guest through the VPN address, which this checks.
+        HostAction::SelfReach { own, ports } => {
+            HostInput::SelfReach(reach::run(Ipv4Addr::LOCALHOST, own, ports, None).await)
+        }
+        HostAction::Exchange { peer } => {
+            HostInput::Exchange(exchange(peer, |report| send(HostInput::Progress(report))).await)
+        }
+        HostAction::StartServer { .. }
+        | HostAction::Rename(..)
+        | HostAction::Allow(_)
+        | HostAction::OnlyAllowed(_)
+        | HostAction::SaveNames(_)
+        | HostAction::OpenLogs
+        | HostAction::StopAndRestore => return,
     };
     send(input);
 }

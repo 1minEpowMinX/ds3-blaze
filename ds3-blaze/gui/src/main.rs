@@ -8,16 +8,13 @@ mod app;
 mod checks;
 mod elevate;
 mod guest;
+mod host;
 mod link;
 mod network;
 mod row;
 mod run;
 mod settings;
 mod start;
-#[expect(
-    dead_code,
-    reason = "the guest's and the host's steps construct the rest of it"
-)]
 mod step;
 
 use eframe::egui;

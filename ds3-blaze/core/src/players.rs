@@ -49,6 +49,28 @@ pub struct Roster {
     pub only_allowed: bool,
 }
 
+impl Roster {
+    /// Returns the display name of a player connecting from `ip` to a server
+    /// advertised at `advertise`.
+    ///
+    /// An address with an entry in `names` gets that entry; this machine and
+    /// the advertised address get `own_name`; an address with an entry in
+    /// `offered` gets that entry; any other address gets `Player-` followed by
+    /// its last octet.
+    pub fn name_for(&self, ip: Ipv4Addr, advertise: Ipv4Addr) -> String {
+        if let Some(name) = self.names.get(&ip) {
+            return name.clone();
+        }
+        if ip.is_loopback() || ip == advertise {
+            return self.own_name.clone();
+        }
+        if let Some(name) = self.offered.get(&ip) {
+            return name.clone();
+        }
+        format!("Player-{}", ip.octets()[3])
+    }
+}
+
 /// Player names and admission rules shared by every session of a server.
 ///
 /// A change applies to the connections and logins that follow it; a player
@@ -83,24 +105,10 @@ impl PlayerBook {
             || roster.allowed.contains(&ip)
     }
 
-    /// Returns the display name of a player connecting from `ip`.
-    ///
-    /// An address with an entry in `names` gets that entry; this machine and the
-    /// advertised address get `own_name`; an address with an entry in `offered`
-    /// gets that entry; any other address gets `Player-` followed by its last
-    /// octet.
+    /// Returns the display name of a player connecting from `ip`, as
+    /// [`Roster::name_for`] gives it for the advertised address.
     pub fn name_for(&self, ip: Ipv4Addr) -> String {
-        let roster = self.read();
-        if let Some(name) = roster.names.get(&ip) {
-            return name.clone();
-        }
-        if ip.is_loopback() || ip == self.advertise {
-            return roster.own_name.clone();
-        }
-        if let Some(name) = roster.offered.get(&ip) {
-            return name.clone();
-        }
-        format!("Player-{}", ip.octets()[3])
+        self.read().name_for(ip, self.advertise)
     }
 
     /// Stores `name` as the name the guest at `ip` sent, when
