@@ -65,7 +65,8 @@ enum Command {
     #[command(subcommand)]
     Fix(FixCommand),
     /// Checks every connection the game makes to the host's server before it
-    /// joins: the hosts entry, the redirector, the Blaze server and QoS.
+    /// joins: the hosts entry, the redirector, the Blaze server and QoS; with
+    /// --name, also sends this player's nickname to the host's server.
     Reach {
         /// The host's VPN address; on the host's own PC, its own VPN address.
         #[arg(long, value_name = "IP")]
@@ -73,6 +74,9 @@ enum Command {
         /// The address the hosts entry should give; the default is --host.
         #[arg(long, value_name = "IP")]
         expect: Option<Ipv4Addr>,
+        /// This player's nickname, sent to the host's server as the last stage.
+        #[arg(long, value_name = "NICK", value_parser = nickname)]
+        name: Option<String>,
     },
     /// Relays the game to EA's Blaze servers and logs every message.
     #[cfg(feature = "research")]
@@ -423,14 +427,19 @@ fn run_fix(command: FixCommand) -> io::Result<()> {
 }
 
 /// Checks the server at `host` with the hosts entry expected to give
-/// `expected`, printing one line per stage; fails when a stage fails.
-async fn reach_command(host: Ipv4Addr, expected: Ipv4Addr) -> io::Result<()> {
+/// `expected`, sending `name` last when it is given, and prints one line per
+/// stage; fails when a stage other than the nickname fails.
+async fn reach_command(host: Ipv4Addr, expected: Ipv4Addr, name: Option<String>) -> io::Result<()> {
     println!("checking the way to the server at {host}:");
-    let reports = reach::run(expected, host, server::Ports::default()).await;
+    let reports = reach::run(expected, host, server::Ports::default(), name.as_deref()).await;
     let mut failed = 0;
     for report in &reports {
         match &report.result {
             Ok(text) => println!("  [ok] {}: {text}", report.stage),
+            // The game still works under the name the host's server gives.
+            Err(text) if report.stage == reach::Stage::Nickname => {
+                println!("  [warning] {}: {text}", report.stage)
+            }
             Err(text) => {
                 failed += 1;
                 println!("  [problem] {}: {text}", report.stage);
@@ -558,7 +567,9 @@ async fn main() -> ExitCode {
         Command::Fix(command) => run_fix(command),
         Command::NetCheck { peer, address } => net_check_command(peer, address),
         Command::P2pCheck(args) => p2p_check(args).await,
-        Command::Reach { host, expect } => reach_command(host, expect.unwrap_or(host)).await,
+        Command::Reach { host, expect, name } => {
+            reach_command(host, expect.unwrap_or(host), name).await
+        }
         #[cfg(feature = "research")]
         Command::Proxy(args) => printing_log(run_proxy(args.ea_redirector)).await,
         #[cfg(feature = "research")]

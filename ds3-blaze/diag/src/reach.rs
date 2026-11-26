@@ -1,14 +1,16 @@
 //! Check, from a guest's PC, of every connection the game makes to the host's
 //! server before it joins: the hosts entry, the redirector, the main Blaze
-//! server and both QoS services.
+//! server and both QoS services; given the guest's nickname, it sends it last.
 //!
-//! No room and no matchmaking: one `getServerInstance`, one `preAuth` and one
-//! QoS request of each kind.
+//! No room and no matchmaking: one `getServerInstance`, one `preAuth`, one QoS
+//! request of each kind and at most one nickname request.
 
 use blaze_ssl_async::BlazeStream;
 use ds3_blaze_core::components::util;
 use ds3_blaze_core::fire::{FireCodec, Frame, FrameType};
 use ds3_blaze_core::hosts::REDIRECTED;
+use ds3_blaze_core::players::check_nickname;
+use ds3_blaze_core::qos::{NICKNAME_PARAM, NICKNAME_PATH};
 use ds3_blaze_core::redirector::{self, COMPONENT, GET_SERVER_INSTANCE};
 use ds3_blaze_core::server::Ports;
 use futures::{SinkExt, TryStreamExt};
@@ -26,6 +28,9 @@ use tokio_util::codec::Framed;
 // TCP connect timeout.
 pub const STAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// End of the headers of an HTTP message.
+const HEADER_END: &str = "\r\n\r\n";
+
 /// Part of the game's way to the server, in the order the game takes them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -39,6 +44,8 @@ pub enum Stage {
     QosHttp,
     /// The QoS bandwidth probe over UDP.
     QosUdp,
+    /// The guest's nickname sent to the server's QoS HTTP listener.
+    Nickname,
 }
 
 impl fmt::Display for Stage {
@@ -50,6 +57,7 @@ impl fmt::Display for Stage {
             Stage::Blaze => "Blaze server",
             Stage::QosHttp => "QoS HTTP",
             Stage::QosUdp => "QoS UDP",
+            Stage::Nickname => "nickname",
         })
     }
 }
@@ -83,8 +91,13 @@ pub fn resolved(addresses: &[Ipv4Addr], expected: Ipv4Addr) -> Result<String, St
 }
 
 /// Runs every stage: the redirector's name against `expected`, then the
-/// server at `address` on `ports`.
-pub async fn run(expected: Ipv4Addr, address: Ipv4Addr, ports: Ports) -> Vec<Report> {
+/// server at `address` on `ports`, sending `name` last when it is given.
+pub async fn run(
+    expected: Ipv4Addr,
+    address: Ipv4Addr,
+    ports: Ports,
+    name: Option<&str>,
+) -> Vec<Report> {
     let resolve = Report {
         stage: Stage::Resolve,
         result: lookup(ports.redirector)
@@ -94,17 +107,17 @@ pub async fn run(expected: Ipv4Addr, address: Ipv4Addr, ports: Ports) -> Vec<Rep
     // The server stages connect to `address` directly, so they run whatever
     // the name resolves to.
     let mut reports = vec![resolve];
-    reports.extend(server(address, ports).await);
+    reports.extend(server(address, ports, name).await);
     reports
 }
 
 /// Runs the stages after resolving against the server at `address`: the
-/// redirector on `ports.redirector`, the main server it hands out, and QoS on
-/// `ports.qos`.
+/// redirector on `ports.redirector`, the main server it hands out, QoS on
+/// `ports.qos`, and the nickname stage when `name` is given.
 ///
 /// The redirector stage fails when the server hands out an address other
 /// than `address`; the Blaze stage is then not tried.
-pub async fn server(address: Ipv4Addr, ports: Ports) -> Vec<Report> {
+pub async fn server(address: Ipv4Addr, ports: Ports, name: Option<&str>) -> Vec<Report> {
     let at = |port| SocketAddr::from((address, port));
     let redirector = within(at(ports.redirector), instance(at(ports.redirector)))
         .await
@@ -124,7 +137,7 @@ pub async fn server(address: Ipv4Addr, ports: Ports) -> Vec<Report> {
     };
     let qos_http = within(at(ports.qos.http), qos_http(at(ports.qos.http))).await;
     let qos_udp = within(at(ports.qos.udp), qos_udp(at(ports.qos.udp))).await;
-    vec![
+    let mut reports = vec![
         Report {
             stage: Stage::Redirector,
             result: redirector.map(|target| format!("sends the game to {target}")),
@@ -141,7 +154,35 @@ pub async fn server(address: Ipv4Addr, ports: Ports) -> Vec<Report> {
             stage: Stage::QosUdp,
             result: qos_udp,
         },
-    ]
+    ];
+    if let Some(name) = name {
+        reports.push(Report {
+            stage: Stage::Nickname,
+            result: nickname(at(ports.qos.http), name).await,
+        });
+    }
+    reports
+}
+
+/// Reads the server's answer to the nickname `sent`: the HTTP `status` and
+/// the `body`, which is the name the server uses or the reason for a refusal.
+///
+/// Returns what the guest is told: a pass when the server took a name,
+/// a failure otherwise.
+pub fn nickname_reply(sent: &str, status: u16, body: &str) -> Result<String, String> {
+    match status {
+        200 if body == sent => Ok(format!("the host sees you as {sent}")),
+        200 => Ok(format!(
+            "the host calls you {body}; the host can change it in its Players row"
+        )),
+        404 => Err(
+            "the host's ds3-blaze takes no nicknames, so the game shows the name \
+                    the host's server gives you"
+                .into(),
+        ),
+        400 => Err(format!("the host refused the name: {body}")),
+        _ => Err(format!("unexpected answer {status}")),
+    }
 }
 
 /// Returns the IPv4 addresses the redirector's name resolves to, through the
@@ -226,6 +267,23 @@ async fn qos_http(qos: SocketAddr) -> io::Result<String> {
     Ok(format!("{qos} answers the QoS request"))
 }
 
+/// Sends `name` to the nickname path of the QoS listener at `qos` and returns
+/// what the guest is told, as [`nickname_reply`] reads the answer.
+async fn nickname(qos: SocketAddr, name: &str) -> Result<String, String> {
+    // The name goes into the request line unencoded, which only a nickname
+    // allows.
+    check_nickname(name).map_err(|reason| format!("not sent: {reason}"))?;
+    let target = format!("{NICKNAME_PATH}?{NICKNAME_PARAM}={name}");
+    let (status, body) = within(qos, async {
+        let response = http_get(qos, &target).await?;
+        status_and_body(&response)
+            .map(|(status, body)| (status, body.to_string()))
+            .ok_or_else(|| io::Error::other("the reply is not HTTP"))
+    })
+    .await?;
+    nickname_reply(name, status, &body)
+}
+
 /// Sends the bandwidth probe the game sends to `qos` and returns what it
 /// answered.
 async fn qos_udp(qos: SocketAddr) -> io::Result<String> {
@@ -274,6 +332,14 @@ async fn http_get(address: SocketAddr, target: &str) -> io::Result<String> {
     Ok(response)
 }
 
+/// Returns the status code and the body of an HTTP `response`, the body being
+/// empty when the response has none.
+fn status_and_body(response: &str) -> Option<(u16, &str)> {
+    let status = response.split_whitespace().nth(1)?.parse().ok()?;
+    let body = response.split_once(HEADER_END).map_or("", |(_, body)| body);
+    Some((status, body))
+}
+
 /// `getServerInstance` request with the fields the game identifies itself by.
 struct InstanceRequest;
 
@@ -316,6 +382,49 @@ mod tests {
         );
         // The game takes the first address, so a later match does not count.
         assert!(resolved(&[elsewhere, HOST], HOST).is_err());
+    }
+
+    #[test]
+    fn the_nickname_reply_tells_whether_the_host_keeps_the_name() {
+        assert_eq!(
+            nickname_reply("Carver", 200, "Carver"),
+            Ok("the host sees you as Carver".into())
+        );
+        assert_eq!(
+            nickname_reply("Carver", 200, "Partner"),
+            Ok("the host calls you Partner; the host can change it in its Players row".into())
+        );
+    }
+
+    #[test]
+    fn the_nickname_reply_fails_on_an_old_server_a_refusal_and_anything_else() {
+        let old = nickname_reply("Carver", 404, "").expect_err("a failure");
+        assert!(
+            old.starts_with("the host's ds3-blaze takes no nicknames"),
+            "{old}"
+        );
+        assert_eq!(
+            nickname_reply("Carver", 400, "a name has 4 to 16 characters"),
+            Err("the host refused the name: a name has 4 to 16 characters".into())
+        );
+        assert_eq!(
+            nickname_reply("Carver", 500, ""),
+            Err("unexpected answer 500".into())
+        );
+    }
+
+    #[test]
+    fn a_reply_splits_into_status_and_body() {
+        assert_eq!(
+            status_and_body("HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nCarver"),
+            Some((200, "Carver"))
+        );
+        assert_eq!(
+            status_and_body("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"),
+            Some((404, ""))
+        );
+        assert_eq!(status_and_body("HTTP/1.1 404 Not Found"), Some((404, "")));
+        assert_eq!(status_and_body("garbage"), None);
     }
 
     #[test]
