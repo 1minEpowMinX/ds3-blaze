@@ -43,6 +43,8 @@ Both players join the same Radmin VPN network, and both run the network check at
 .\ds3-blaze.exe p2p-check --peer <other PC's VPN address>
 ```
 
+Each Windows setting the check finds wrong comes with the `fix` command that changes it. [docs/guides/network-checks.md](docs/guides/network-checks.md) describes every check.
+
 Back up your saves before the first test sessions.
 
 ### Host
@@ -79,6 +81,14 @@ If the guest does not get in, the `logs\` folder shows how far the server got. T
 
    - pick quick match to join the host's public game. The server puts you into it as soon as it exists, retrying for as long as the game's search lasts, so you may start searching a little before the host's game is up;
    - or accept the host's invite in the EA App. The server knows players by the addresses they connect from, not by EA account, so it matches the invite to the host only while the two of you are the only players on it.
+
+If the game cannot get in, check every connection it makes to the host's server while the server runs:
+
+```powershell
+.\ds3-blaze.exe reach --host <host's VPN address>
+```
+
+It prints one line per stage (the hosts entry, the redirector, the Blaze server, QoS) and says what is wrong with each one that fails.
 
 ### Afterwards
 

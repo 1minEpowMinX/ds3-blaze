@@ -13,12 +13,18 @@ use ds3_blaze_core::hosts::{self, Action, State};
 use ds3_blaze_core::log;
 use ds3_blaze_core::players::Roster;
 use ds3_blaze_core::server::{self, DEFAULT_BLAZE_PORT, Server};
-use ds3_blaze_diag::{netcheck, p2pcheck};
+use ds3_blaze_diag::fix;
+use ds3_blaze_diag::netcheck::{self, Finding, Fix, Own, Setup, Severity};
+use ds3_blaze_diag::p2p::{self, Progress, Timing};
+use ds3_blaze_diag::reach;
 
 use std::io;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+use tokio::sync::mpsc;
 
 /// Display name used when `--name` is not given.
 const DEFAULT_NAME: &str = "DS3Player";
@@ -39,23 +45,60 @@ enum Command {
     /// server.
     #[command(subcommand)]
     Hosts(HostsCommand),
-    /// Shows the adapter traffic to the peer takes, other VPN adapters, the
-    /// network profile and the Windows Firewall rules for the game and this
-    /// server.
+    /// Shows this PC's VPN adapter, other VPN adapters, the network profile,
+    /// the Windows Firewall rules for the game and this server, and the adapter
+    /// traffic to the peer takes.
     NetCheck {
         /// The other player's VPN address.
         #[arg(long, value_name = "IP")]
         peer: Ipv4Addr,
+        /// This PC's VPN address; without it any adapter that looks like a VPN
+        /// counts as this PC's.
+        #[arg(long, value_name = "IP")]
+        address: Option<Ipv4Addr>,
     },
     /// Runs net-check, then exchanges UDP pings with the other player; run it
     /// on both PCs at once.
     P2pCheck(P2pArgs),
+    /// Changes a Windows network setting that net-check finds wrong; needs a
+    /// console run as administrator.
+    #[command(subcommand)]
+    Fix(FixCommand),
+    /// Checks every connection the game makes to the host's server before it
+    /// joins: the hosts entry, the redirector, the Blaze server and QoS.
+    Reach {
+        /// The host's VPN address; on the host's own PC, its own VPN address.
+        #[arg(long, value_name = "IP")]
+        host: Ipv4Addr,
+        /// The address the hosts entry should give; the default is --host.
+        #[arg(long, value_name = "IP")]
+        expect: Option<Ipv4Addr>,
+    },
     /// Relays the game to EA's Blaze servers and logs every message.
     #[cfg(feature = "research")]
     Proxy(EaArgs),
     /// Checks the SSLv3 connection to EA's redirector and main server.
     #[cfg(feature = "research")]
     EaCheck(EaArgs),
+}
+
+#[derive(Subcommand)]
+enum FixCommand {
+    /// Adds a Windows Firewall rule allowing inbound UDP on the game's P2P port.
+    GameRule,
+    /// Adds a Windows Firewall rule allowing inbound traffic to the program
+    /// that runs the server.
+    ServerRule {
+        /// The program; the default is this executable.
+        #[arg(long, value_name = "PATH")]
+        program: Option<PathBuf>,
+    },
+    /// Sets the network of the adapter holding --address to Private.
+    NetworkProfile {
+        /// This PC's VPN address.
+        #[arg(long, value_name = "IP")]
+        address: Ipv4Addr,
+    },
 }
 
 #[derive(Subcommand)]
@@ -104,11 +147,14 @@ struct P2pArgs {
     /// The other player's VPN address.
     #[arg(long, value_name = "IP")]
     peer: Ipv4Addr,
+    /// This PC's VPN address, as net-check takes it.
+    #[arg(long, value_name = "IP")]
+    address: Option<Ipv4Addr>,
     /// UDP port; the default is the game's P2P port.
-    #[arg(long, value_name = "PORT", default_value_t = p2pcheck::GAME_PORT)]
+    #[arg(long, value_name = "PORT", default_value_t = p2p::GAME_PORT)]
     port: u16,
     /// Longest run time in seconds.
-    #[arg(long, value_name = "N", default_value_t = p2pcheck::DEFAULT_SECONDS)]
+    #[arg(long, value_name = "N", default_value_t = p2p::DEFAULT_SECONDS)]
     seconds: u64,
 }
 
@@ -182,37 +228,55 @@ async fn serve(args: ServeArgs) -> io::Result<()> {
     Server::start(config).await?.finished().await
 }
 
+/// Returns what `state` means for the game, or its problem as an error.
+fn describe(state: State) -> io::Result<String> {
+    Ok(match state {
+        State::EaServers => "the game reaches the EA servers".into(),
+        State::Redirected(address) => {
+            format!("the game reaches the ds3-blaze server at {address}")
+        }
+        State::Overridden { entry, ours } => {
+            let instead = match ours {
+                Some(ours) => format!("the ds3-blaze server at {ours}"),
+                None => "the EA servers".into(),
+            };
+            format!(
+                "line {} of {}, \"{}\", sends the game to {} instead of {instead}; remove that line",
+                entry.line,
+                hosts::path().display(),
+                entry.text,
+                entry.address
+            )
+        }
+        State::Broken(problem) => return Err(io::Error::other(problem)),
+    })
+}
+
 /// Runs a `hosts` subcommand.
 fn hosts(command: HostsCommand) -> io::Result<()> {
     let action = match command {
         HostsCommand::Enable { address } => Action::Enable(address),
         HostsCommand::Disable => Action::Disable,
         HostsCommand::Status => {
-            match hosts::status()? {
-                State::EaServers => println!("the game reaches the EA servers"),
-                State::Redirected(address) => {
-                    println!("the game reaches the ds3-blaze server at {address}")
-                }
-                State::Broken(problem) => return Err(io::Error::other(problem)),
-            }
+            println!("{}", describe(hosts::status()?)?);
             return Ok(());
         }
     };
-    hosts::apply(action).map_err(|err| match err.kind() {
-        io::ErrorKind::PermissionDenied => io::Error::new(
-            err.kind(),
-            format!("{err}; run this command in a console run as administrator"),
-        ),
-        _ => err,
-    })?;
+    hosts::apply(action).map_err(needing_administrator)?;
     println!(
         "previous hosts file without ds3-blaze entries saved as {}",
         hosts::backup_path().display()
     );
     if let Err(err) = hosts::flush_dns() {
         eprintln!(
-            "warning: {err}; the game may keep the old address until the DNS cache              expires or Windows restarts"
+            "warning: {err}; the game may keep the old address until the DNS cache \
+             expires or Windows restarts"
         );
+    }
+    // An entry outside the section that comes first still wins after the write.
+    if let Ok(state @ State::Overridden { .. }) = hosts::status() {
+        eprintln!("warning: {}", describe(state)?);
+        return Ok(());
     }
     match action {
         Action::Enable(address) => println!(
@@ -224,11 +288,224 @@ fn hosts(command: HostsCommand) -> io::Result<()> {
     Ok(())
 }
 
-/// Runs net-check against `peer` and fails when it finds a problem.
-fn net_check(peer: Ipv4Addr) -> io::Result<()> {
-    match netcheck::diagnose(peer)?.problems {
+/// What net-check found that the commands after it use.
+struct NetCheck {
+    problems: usize,
+    /// Names of the VPN adapters that are up besides this PC's.
+    other_vpn_adapters: Vec<String>,
+}
+
+/// Prints the local and route findings for traffic to `peer` from the adapter
+/// holding `address`, or from any VPN adapter without one.
+fn net_check(peer: Ipv4Addr, address: Option<Ipv4Addr>) -> io::Result<NetCheck> {
+    println!("network check for {peer} (reading Windows settings, a few seconds)");
+    let records = netcheck::read(Some(peer))?;
+    let own = address.map_or(Own::AnyVpn, Own::Address);
+    let setup = Setup {
+        own,
+        // This executable runs `serve`, so its rules are the server's.
+        server: std::env::current_exe().ok(),
+    };
+    println!("this PC:");
+    let mut findings = netcheck::local(&records, &setup);
+    print_findings(&findings);
+    println!("route to {peer}:");
+    let route = netcheck::route(&records, peer, &own, netcheck::source_ip(peer));
+    print_findings(&route);
+    findings.extend(route);
+    let count = |severity| findings.iter().filter(|f| f.severity == severity).count();
+    let problems = count(Severity::Problem);
+    println!(
+        "network check: {problems} problem(s), {} warning(s)",
+        count(Severity::Warning)
+    );
+    Ok(NetCheck {
+        problems,
+        other_vpn_adapters: netcheck::other_vpn_adapters(&records, &own)
+            .into_iter()
+            .map(|adapter| adapter.name.clone())
+            .collect(),
+    })
+}
+
+/// Runs net-check and fails when a finding is a problem.
+fn net_check_command(peer: Ipv4Addr, address: Option<Ipv4Addr>) -> io::Result<()> {
+    match net_check(peer, address)?.problems {
         0 => Ok(()),
         n => Err(io::Error::other(format!("{n} problem(s) found"))),
+    }
+}
+
+/// Runs net-check, then the exchange with the other player, printing its
+/// progress and outcome; fails when a direction does not work.
+async fn p2p_check(args: P2pArgs) -> io::Result<()> {
+    // Problems net-check finds do not stop the exchange, which shows their
+    // effect.
+    let other_vpn_adapters = match net_check(args.peer, args.address) {
+        Ok(found) => found.other_vpn_adapters,
+        Err(err) => {
+            println!("network check failed to run: {err}");
+            Vec::new()
+        }
+    };
+    println!();
+    let socket = p2p::bind(args.port).await?;
+    let peer = SocketAddr::from((args.peer, args.port));
+    let timing = Timing {
+        limit: Duration::from_secs(args.seconds),
+        ..Timing::default()
+    };
+    let (sender, mut progress) = mpsc::unbounded_channel();
+    let print = async {
+        while let Some(event) = progress.recv().await {
+            match event {
+                Progress::Pinging { target, until } => println!(
+                    "UDP {}: pinging {target} for up to {} s; run the same check on the other PC now",
+                    target.port(),
+                    until
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .as_secs_f32()
+                        .round()
+                ),
+                Progress::PeerReachesThisPc => {
+                    println!("  ping from {peer} arrived: the other player reaches this PC")
+                }
+                Progress::ThisPcReachesPeer => {
+                    println!("  answer from {peer} arrived: this PC reaches the other player")
+                }
+            }
+        }
+    };
+    let (outcome, ()) = tokio::join!(p2p::exchange(socket, peer, timing, sender), print);
+    println!(
+        "sent {} pings, {} answered; {} pings received from the other player",
+        outcome.sent, outcome.answered, outcome.received
+    );
+    for stranger in &outcome.strangers {
+        println!(
+            "  packets also came from {stranger}, not from the other player: check their address"
+        );
+    }
+    let names: Vec<&str> = other_vpn_adapters.iter().map(String::as_str).collect();
+    match outcome.failure(&names) {
+        None => {
+            println!("both directions work over UDP {}", args.port);
+            Ok(())
+        }
+        Some(failure) => Err(io::Error::other(failure)),
+    }
+}
+
+/// Returns `err` with the hint to run the command as administrator when its
+/// kind is [`io::ErrorKind::PermissionDenied`], and `err` itself otherwise.
+fn needing_administrator(err: io::Error) -> io::Error {
+    match err.kind() {
+        io::ErrorKind::PermissionDenied => io::Error::new(
+            err.kind(),
+            format!("{err}; run this command in a console run as administrator"),
+        ),
+        _ => err,
+    }
+}
+
+/// Carries out the fix `command` names.
+fn run_fix(command: FixCommand) -> io::Result<()> {
+    let fix = match command {
+        FixCommand::GameRule => Fix::GameRule,
+        FixCommand::ServerRule { program } => {
+            Fix::ServerRule(program.map_or_else(std::env::current_exe, Ok)?)
+        }
+        FixCommand::NetworkProfile { address } => Fix::PrivateProfile(address),
+    };
+    fix::apply(&fix).map_err(needing_administrator)?;
+    println!("done; net-check shows the new state");
+    Ok(())
+}
+
+/// Checks the server at `host` with the hosts entry expected to give
+/// `expected`, printing one line per stage; fails when a stage fails.
+async fn reach_command(host: Ipv4Addr, expected: Ipv4Addr) -> io::Result<()> {
+    println!("checking the way to the server at {host}:");
+    let reports = reach::run(expected, host, server::Ports::default()).await;
+    let mut failed = 0;
+    for report in &reports {
+        match &report.result {
+            Ok(text) => println!("  [ok] {}: {text}", report.stage),
+            Err(text) => {
+                failed += 1;
+                println!("  [problem] {}: {text}", report.stage);
+                if report.stage == reach::Stage::Resolve {
+                    println!(
+                        "          fix: {} hosts enable --address {expected}",
+                        shell_exe(&invoked_exe())
+                    );
+                }
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(io::Error::other(format!(
+            "{failed} of {} stages failed",
+            reports.len()
+        )));
+    }
+    println!("the game reaches the server at {host}");
+    Ok(())
+}
+
+/// Returns the path this executable was started by, as the console typed it.
+fn invoked_exe() -> String {
+    std::env::args()
+        .next()
+        .unwrap_or_else(|| env!("CARGO_BIN_NAME").into())
+}
+
+/// Returns `invoked` in the form PowerShell runs it in.
+fn shell_exe(invoked: &str) -> String {
+    // PowerShell runs a quoted path only through the call operator.
+    if invoked.contains(' ') {
+        format!("& \"{invoked}\"")
+    } else {
+        invoked.to_string()
+    }
+}
+
+/// Returns the command line that carries out `fix`.
+fn fix_command(fix: &Fix) -> String {
+    let exe = std::env::current_exe().ok();
+    fix_command_from(fix, &invoked_exe(), exe.as_deref())
+}
+
+/// Returns the command line that carries out `fix` with the executable
+/// started as `invoked`; the server rule names its program only when it is
+/// not `current_exe`, which `fix server-rule` takes by default.
+fn fix_command_from(fix: &Fix, invoked: &str, current_exe: Option<&std::path::Path>) -> String {
+    let exe = shell_exe(invoked);
+    match fix {
+        Fix::GameRule => format!("{exe} fix game-rule"),
+        Fix::ServerRule(program) if Some(program.as_path()) == current_exe => {
+            format!("{exe} fix server-rule")
+        }
+        Fix::ServerRule(program) => {
+            format!("{exe} fix server-rule --program \"{}\"", program.display())
+        }
+        Fix::PrivateProfile(address) => format!("{exe} fix network-profile --address {address}"),
+    }
+}
+
+/// Prints each finding on a line of its own, marked with its severity.
+fn print_findings(findings: &[Finding]) {
+    for finding in findings {
+        let mark = match finding.severity {
+            Severity::Ok => "ok",
+            Severity::Note => "note",
+            Severity::Warning => "warning",
+            Severity::Problem => "problem",
+        };
+        println!("  [{mark}] {}", finding.text);
+        if let Some(fix) = &finding.fix {
+            println!("          fix: {}", fix_command(fix));
+        }
     }
 }
 
@@ -278,8 +555,10 @@ async fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Serve(args) => printing_log(serve(args)).await,
         Command::Hosts(command) => hosts(command),
-        Command::NetCheck { peer } => net_check(peer),
-        Command::P2pCheck(args) => p2pcheck::run(args.peer, args.port, args.seconds).await,
+        Command::Fix(command) => run_fix(command),
+        Command::NetCheck { peer, address } => net_check_command(peer, address),
+        Command::P2pCheck(args) => p2p_check(args).await,
+        Command::Reach { host, expect } => reach_command(host, expect.unwrap_or(host)).await,
         #[cfg(feature = "research")]
         Command::Proxy(args) => printing_log(run_proxy(args.ea_redirector)).await,
         #[cfg(feature = "research")]
@@ -313,6 +592,39 @@ mod tests {
         assert!(player("26.0.0.2").is_err());
         assert!(player("26.0.0.2= ").is_err());
         assert!(player("26.0.2=Carver").is_err());
+    }
+
+    #[test]
+    fn fix_commands_run_as_printed() {
+        let exe = std::path::Path::new(r"C:\My Games\ds3-blaze.exe");
+        assert_eq!(
+            fix_command_from(&Fix::GameRule, r".\ds3-blaze.exe", Some(exe)),
+            r".\ds3-blaze.exe fix game-rule"
+        );
+        assert_eq!(
+            fix_command_from(
+                &Fix::ServerRule(exe.into()),
+                &exe.display().to_string(),
+                Some(exe)
+            ),
+            r#"& "C:\My Games\ds3-blaze.exe" fix server-rule"#
+        );
+        assert_eq!(
+            fix_command_from(
+                &Fix::ServerRule(r"D:\gui.exe".into()),
+                "ds3-blaze",
+                Some(exe)
+            ),
+            r#"ds3-blaze fix server-rule --program "D:\gui.exe""#
+        );
+        assert_eq!(
+            fix_command_from(
+                &Fix::PrivateProfile(Ipv4Addr::new(26, 0, 0, 1)),
+                "ds3-blaze",
+                None
+            ),
+            "ds3-blaze fix network-profile --address 26.0.0.1"
+        );
     }
 
     #[test]

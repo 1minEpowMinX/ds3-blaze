@@ -51,7 +51,7 @@ The `vpn` module lists IPv4 adapters through `GetAdaptersAddresses`, with the sa
 
 ### Network findings and fixes
 
-`netcheck` returns `Vec<Finding { severity, text, fix }>` instead of printing. It is split in two: a local part (VPN adapter present, other VPN adapters that are up, its network profile, firewall rules for the game and for ds3-blaze), which needs no peer, and a route part for a given peer address. Both work on parsed records, apart from the PowerShell call that reads them, so their rules have unit tests without the machine's network state.
+`netcheck` returns `Vec<Finding { severity, text, fix }>` instead of printing. It is split in two: a local part (VPN adapter present, other VPN adapters that are up as a note, its network profile, firewall rules for the game and for ds3-blaze), which needs no peer and runs on the host's PC and the guest's alike, and a route part for a given peer address. Both work on parsed records, apart from the PowerShell call that reads them, so their rules have unit tests without the machine's network state.
 
 ### Route to the peer
 
@@ -60,11 +60,13 @@ The route part takes the peer's address and the player's own VPN address, the on
 - Windows has a route to the peer.
 - The route leaves through the adapter that holds the chosen address, and the peer is on that adapter's network, with no gateway in between. The comparison is with the chosen adapter rather than with any adapter whose name looks like a VPN (`is_vpn`), so another tunnel that takes over the peer's addresses is caught whatever its adapter is called.
 - A UDP socket connected to the peer picks the chosen address as its source.
-- Other VPN adapters that are up are listed: as a note when the route passes, as the likely cause when it does not.
+- Other VPN adapters that are up, which the local part already notes, are named again only when the route fails, as the likely cause; a passing route does not repeat them.
+
+On the command line the own address is optional. Without it, any adapter `is_vpn` recognises counts as the player's: the route passes when it leaves through one of them, and a failing route names no other adapter as the cause, since every VPN adapter is a candidate; each one is noted instead as the network the peer's address should be on.
 
 The route part sees only routing. A VPN client that drops traffic with filters while the routes stay intact (a kill switch) shows only in the exchange, so a `p2p` run that gets no answer while another VPN adapter is up names that adapter as the likely cause.
 
-`fix` names an action the GUI can offer as a button: `Fix::GameRule` (inbound UDP on `GAME_PORT`), `Fix::ServerRule` (inbound for the executable that runs the server, needed on the host) and `Fix::PrivateProfile` (the VPN adapter's network set to Private). Each is carried out by the CLI command `fix`, which the GUI starts elevated. After a fix the GUI runs the local part again, and the new findings show whether it worked.
+`fix` names an action the GUI can offer as a button, carrying what the action needs: `Fix::GameRule` (inbound UDP on `GAME_PORT`, whatever the game's path), `Fix::ServerRule(path)` (inbound for the executable at `path` that runs the server, needed on the host) and `Fix::PrivateProfile(address)` (the network of the adapter holding `address` set to Private). The firewall rules are named by `fix::rule_name` after one pattern, and a fix replaces a rule of its own name, so running it twice leaves one rule. Each is carried out by the CLI command `fix`, which the GUI starts elevated. After a fix the GUI runs the local part again, and the new findings show whether it worked.
 
 ### P2P check
 
@@ -83,7 +85,9 @@ The exchange binds `GAME_PORT`, which the game holds while it runs. A failed bin
 
 `reach` is the guest's check of the host's server. It resolves `gosredirector.ea.com`, which confirms that the hosts entry is in effect, and compares the result with the host's address; asks the redirector for the server instance over SSLv3; sends one `preAuth` to the Blaze server; and queries QoS over HTTP and UDP. It creates no room and starts no matchmaking, so it is safe against a host who is already playing.
 
-The expected hosts address and the server address are separate parameters. The guest expects the host's address and checks the host's server; the host expects 127.0.0.1 and checks its own server through its VPN address, which shows that the listeners answer on the VPN interface.
+The redirector has to hand out the address being checked: a server advertising another address sends the guest's game elsewhere, so that fails the redirector stage, and `preAuth` is then not tried. The other stages connect to the checked address directly and run whatever the name resolves to. Each stage has a timeout of its own (`reach::STAGE_TIMEOUT`), so a packet dropped over the VPN costs seconds rather than the TCP connect timeout.
+
+The expected hosts address and the server address are separate parameters (`reach --host IP [--expect IP]`, where `--expect` defaults to `--host`). The guest expects the host's address and checks the host's server; the host expects 127.0.0.1 and checks its own server through its VPN address, which shows that the listeners answer on the VPN interface.
 
 ### Protocol test
 
@@ -159,10 +163,10 @@ Closing the window while the hosts file points at ds3-blaze asks whether to rest
 |---|---|
 | `serve` | the server, with today's options |
 | `hosts enable --address IP`, `hosts disable`, `hosts status` | the hosts entry; `enable` and `disable` need an elevated console |
-| `fix game-rule`, `fix server-rule`, `fix network-profile` | the network fixes the GUI offers |
-| `net-check --peer IP [--address IP]` | the network findings; `--address` is the player's own VPN address, and without it the route is checked against any adapter `is_vpn` recognises |
-| `p2p-check --peer IP [--address IP]` | the P2P exchange, after the same findings |
-| `reach --host IP` | the guest's server check |
+| `fix game-rule`, `fix server-rule [--program PATH]`, `fix network-profile --address IP` | the network fixes the GUI offers; `--program` defaults to the running executable; all need an elevated console |
+| `net-check --peer IP [--address IP]` | the network findings, each wrong setting with the `fix` command that changes it; `--address` is the player's own VPN address, and without it the route is checked against any adapter `is_vpn` recognises |
+| `p2p-check --peer IP [--address IP] [--port PORT] [--seconds N]` | the P2P exchange, after the same findings |
+| `reach --host IP [--expect IP]` | the guest's server check |
 | `proxy`, `ea-check` | research only, built with the feature `research` |
 
 The GUI's settings file does not affect the command line, which stays predictable for tests.
@@ -189,10 +193,12 @@ The README and the Nexus page still share the few sentences of the short start, 
 - `hosts::rewrite`: with and without a byte order mark, ANSI text, CRLF and LF, an empty file, a file without a final line break, legacy-marker lines, a section without an end line, repeated `enable`.
 - `hosts::state`: an entry for a redirected name outside the section, before the section and after it, and a commented one.
 - `PlayerBook`: admission and naming rules as `Config::admits` and `Config::name_for` have them now, and changes while sessions are open.
-- The route part on parsed records: no route; the route through an adapter other than the chosen one, including one that `is_vpn` recognises; a gateway in between; a source address other than the chosen one; another VPN adapter up beside a passing route.
+- The route part on parsed records: no route; the route through an adapter other than the chosen one, including one that `is_vpn` recognises; a gateway in between; a source address other than the chosen one; another VPN adapter up beside a passing route (no route finding) and beside a failing one (the likely cause).
+- The local part on parsed records: no adapter holds the chosen address; a Public network with its fix; a block rule; a missing rule with inbound blocked and allowed; no server rule on a guest's PC; a port rule without a program counting as the game's.
+- `fix::script`: the port from `GAME_PORT`, a program path with a single quote, the adapter holding the given address, the administrator check.
 - `p2p`: two exchanges on the loopback address with different ports, started a moment apart; one exchange whose port is already taken; the failure text of an exchange without answers, with and without another VPN adapter up.
 - The host's trigger: a first connection from an address starts one run, a second connection from it starts none, a refused connection starts one.
-- `reach` against a server started in the test.
+- `reach`: the resolved addresses against the expected one; a server started in the test, checked at its own address and while advertising another one.
 - The protocol test described above.
 - The steps of each mode as state machines, without a window.
 

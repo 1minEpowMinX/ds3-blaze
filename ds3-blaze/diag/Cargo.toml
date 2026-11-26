@@ -7,10 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-tokio.workspace = true
-
-[dev-dependencies]
-# The protocol test: a server in the test process and the game's client side.
+# reach speaks the game's side of the protocol to a ds3-blaze server.
 ds3-blaze-core = { path = "../core" }
 blaze-ssl-async.workspace = true
 tdf.workspace = true
