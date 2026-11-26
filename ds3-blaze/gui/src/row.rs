@@ -20,8 +20,13 @@ const MARKER_SIZE: f32 = 24.0;
 /// Space before the marker and between the marker and the sentence.
 const MARKER_GAP: f32 = 10.0;
 
-/// Space an elevating button's label leaves for the shield before it.
-const SHIELD_SPACE: f32 = 20.0;
+/// The shield an elevating button's label starts with, U+1F6E1, which
+/// egui takes from the system's emoji font (Segoe UI Emoji on Windows) and
+/// draws in that font's own colours.
+const SHIELD: &str = "\u{1F6E1}";
+
+/// Space between the shield and the label, in points.
+const SHIELD_GAP: f32 = 6.0;
 
 /// What an elevating button says on hover.
 const PERMISSION: &str = "Windows asks for permission";
@@ -195,19 +200,31 @@ pub fn main_action(ui: &mut egui::Ui, button: &Button, height: f32) -> bool {
 /// Draws `button`, filled with the accent when `main`, and returns whether
 /// it was pressed.
 fn draw(ui: &mut egui::Ui, button: &Button, height: f32, main: bool) -> bool {
-    let colour = if main {
-        ON_ACCENT
-    } else {
-        Color32::PLACEHOLDER
-    };
+    let font_id = egui::TextStyle::Button.resolve(ui.style());
+    let shield = button.elevates.then(|| {
+        let colour = match (button.enabled(), main) {
+            (false, _) => GREY,
+            (true, true) => ON_ACCENT,
+            (true, false) => ACCENT,
+        };
+        // The colour applies only where the system has no colour emoji font.
+        ui.painter()
+            .layout_no_wrap(SHIELD.to_owned(), font_id.clone(), colour)
+    });
     let mut job = LayoutJob::default();
     job.append(
         button.label,
-        if button.elevates { SHIELD_SPACE } else { 0.0 },
+        shield
+            .as_ref()
+            .map_or(0.0, |shield| shield.mesh_bounds.width() + SHIELD_GAP),
         TextFormat {
-            font_id: egui::TextStyle::Button.resolve(ui.style()),
+            font_id,
             // The placeholder takes the button's own text colour.
-            color: colour,
+            color: if main {
+                ON_ACCENT
+            } else {
+                Color32::PLACEHOLDER
+            },
             ..TextFormat::default()
         },
     );
@@ -220,15 +237,17 @@ fn draw(ui: &mut egui::Ui, button: &Button, height: f32, main: bool) -> bool {
         ui.painter()
             .rect_filled(response.rect, 8, Color32::WHITE.gamma_multiply(0.08));
     }
-    if button.elevates {
+    if let Some(shield) = shield {
+        // The emoji font's line is taller than the label's, so the glyph is
+        // centred on its own ink rather than on its line.
+        let ink = shield.mesh_bounds;
         let left = response.rect.left() + ui.spacing().button_padding.x;
-        let centre = pos2(left + SHIELD_SPACE / 2.0 - 3.0, response.rect.center().y);
-        let shield_colour = match (button.enabled(), main) {
-            (false, _) => GREY,
-            (true, true) => ON_ACCENT,
-            (true, false) => ACCENT,
-        };
-        shield(ui.painter(), centre, shield_colour);
+        let pos = pos2(left - ink.left(), response.rect.center().y - ink.center().y);
+        let mut painter = ui.painter().clone();
+        if !button.enabled() {
+            painter.multiply_opacity(ui.visuals().disabled_alpha());
+        }
+        painter.galley(pos, shield, GREY);
     }
     let response = match button.disabled {
         Some(reason) => response.on_disabled_hover_text(reason),
@@ -236,28 +255,6 @@ fn draw(ui: &mut egui::Ui, button: &Button, height: f32, main: bool) -> bool {
         None => response,
     };
     response.clicked()
-}
-
-/// Paints the shield Windows marks administrator actions with around
-/// `centre`.
-fn shield(painter: &egui::Painter, centre: Pos2, colour: Color32) {
-    let outline = [
-        (-5.5, -6.5),
-        (5.5, -6.5),
-        (5.5, 0.5),
-        (0.0, 7.0),
-        (-5.5, 0.5),
-    ]
-    .map(|(x, y)| centre + vec2(x, y));
-    painter.add(egui::Shape::convex_polygon(
-        outline.to_vec(),
-        colour,
-        Stroke::NONE,
-    ));
-    painter.line_segment(
-        [centre + vec2(0.0, -6.5), centre + vec2(0.0, 7.0)],
-        Stroke::new(1.0, colour.gamma_multiply(0.5)),
-    );
 }
 
 /// Draws the steps as rows of one card and returns the click one of them
