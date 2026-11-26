@@ -37,8 +37,11 @@ pub struct Roster {
     /// Display name of a player connecting from this machine or from the
     /// advertised address.
     pub own_name: String,
-    /// Display names by address; an entry wins over `own_name`.
+    /// Display names by address; an entry wins over `own_name` and `offered`.
     pub names: BTreeMap<Ipv4Addr, String>,
+    /// Names guests sent by address, used where neither `names` nor `own_name`
+    /// applies.
+    pub offered: BTreeMap<Ipv4Addr, String>,
     /// Addresses admitted while `only_allowed` is on.
     pub allowed: BTreeSet<Ipv4Addr>,
     /// Whether Blaze accepts connections only from this machine, the advertised
@@ -83,8 +86,9 @@ impl PlayerBook {
     /// Returns the display name of a player connecting from `ip`.
     ///
     /// An address with an entry in `names` gets that entry; this machine and the
-    /// advertised address get `own_name`; any other address gets `Player-`
-    /// followed by its last octet.
+    /// advertised address get `own_name`; an address with an entry in `offered`
+    /// gets that entry; any other address gets `Player-` followed by its last
+    /// octet.
     pub fn name_for(&self, ip: Ipv4Addr) -> String {
         let roster = self.read();
         if let Some(name) = roster.names.get(&ip) {
@@ -93,7 +97,22 @@ impl PlayerBook {
         if ip.is_loopback() || ip == self.advertise {
             return roster.own_name.clone();
         }
+        if let Some(name) = roster.offered.get(&ip) {
+            return name.clone();
+        }
         format!("Player-{}", ip.octets()[3])
+    }
+
+    /// Stores `name` as the name the guest at `ip` sent, when
+    /// [`check_nickname`] accepts it.
+    ///
+    /// Returns the display name of `ip` after the change, or the reason `name`
+    /// is refused, in which case the book is unchanged.
+    pub fn offer(&self, ip: Ipv4Addr, name: &str) -> Result<String, String> {
+        check_nickname(name)?;
+        self.write().offered.insert(ip, name.to_string());
+        event::changed();
+        Ok(self.name_for(ip))
     }
 
     /// Sets the display name of `ip` to `name`, or removes its entry for `None`.
@@ -149,6 +168,7 @@ mod tests {
             Roster {
                 own_name: "host".into(),
                 names: BTreeMap::from([(GUEST, "guest".into())]),
+                offered: Default::default(),
                 allowed: BTreeSet::from([GUEST]),
                 only_allowed,
             },
@@ -195,6 +215,60 @@ mod tests {
         assert_eq!(book.name_for(STRANGER), "Carver");
         book.set_name(STRANGER, None);
         assert_eq!(book.name_for(STRANGER), "Player-3");
+    }
+
+    fn empty_book(only_allowed: bool) -> PlayerBook {
+        PlayerBook::new(
+            ADVERTISE,
+            Roster {
+                own_name: "host".into(),
+                only_allowed,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn a_sent_name_replaces_the_last_octet() {
+        let book = empty_book(false);
+        assert_eq!(book.name_for(GUEST), "Player-2");
+        assert_eq!(book.offer(GUEST, "Carver"), Ok("Carver".into()));
+        assert_eq!(book.name_for(GUEST), "Carver");
+        assert_eq!(book.offer(GUEST, "Ellie"), Ok("Ellie".into()));
+    }
+
+    #[test]
+    fn the_host_name_wins_over_the_sent_one_until_cleared() {
+        let book = empty_book(false);
+        book.set_name(GUEST, Some("Partner".into()));
+        assert_eq!(book.offer(GUEST, "Carver"), Ok("Partner".into()));
+        assert_eq!(book.name_for(GUEST), "Partner");
+        book.set_name(GUEST, None);
+        assert_eq!(book.name_for(GUEST), "Carver");
+    }
+
+    #[test]
+    fn a_refused_address_keeps_its_sent_name() {
+        let book = empty_book(true);
+        assert!(!book.admits(GUEST));
+        assert_eq!(book.offer(GUEST, "Carver"), Ok("Carver".into()));
+        assert_eq!(book.name_for(GUEST), "Carver");
+    }
+
+    #[test]
+    fn this_machine_and_the_advertised_address_keep_own_name() {
+        let book = empty_book(false);
+        assert_eq!(book.offer(ADVERTISE, "Carver"), Ok("host".into()));
+        assert_eq!(book.offer(Ipv4Addr::LOCALHOST, "Carver"), Ok("host".into()));
+    }
+
+    #[test]
+    fn a_refused_name_leaves_the_book_unchanged() {
+        let book = empty_book(false);
+        let before = book.roster();
+        assert!(book.offer(GUEST, "Isaac Clarke").is_err());
+        assert_eq!(book.roster(), before);
+        assert_eq!(book.name_for(GUEST), "Player-2");
     }
 
     #[test]

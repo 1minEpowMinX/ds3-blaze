@@ -221,6 +221,7 @@ async fn serve(args: ServeArgs) -> io::Result<()> {
             own_name: args.name,
             allowed: args.players.iter().map(|(ip, _)| *ip).collect(),
             names: args.players.into_iter().collect(),
+            offered: Default::default(),
             only_allowed: args.only_listed,
         },
     };
