@@ -45,6 +45,27 @@ pub fn fix_args(fix: &Fix) -> Vec<String> {
     args
 }
 
+/// Returns the command line's arguments for applying `fixes` in one run:
+/// [`fix_args`] for one fix, `fix several` with one flag per fix for more.
+pub fn fixes_args(fixes: &[Fix]) -> Vec<String> {
+    if let [fix] = fixes {
+        return fix_args(fix);
+    }
+    let mut args = vec!["fix".to_string(), "several".to_string()];
+    for fix in fixes {
+        match fix {
+            Fix::GameRule => args.push("--game-rule".into()),
+            Fix::ServerRule(program) => {
+                args.extend(["--server-rule".into(), program.display().to_string()])
+            }
+            Fix::PrivateProfile(address) => {
+                args.extend(["--network-profile".into(), address.to_string()])
+            }
+        }
+    }
+    args
+}
+
 /// Returns the command line's arguments for pointing the game at `address`
 /// through the hosts file, or back at the EA servers for `None`.
 pub fn hosts_args(address: Option<std::net::Ipv4Addr>) -> Vec<String> {
@@ -185,6 +206,32 @@ mod tests {
         assert_eq!(
             format!("{}.exe", bin["name"].as_str().expect("a name")),
             CLI_EXE
+        );
+    }
+
+    #[test]
+    fn one_fix_runs_as_its_own_command() {
+        assert_eq!(fixes_args(&[Fix::GameRule]), fix_args(&Fix::GameRule));
+    }
+
+    #[test]
+    fn several_fixes_run_as_fix_several() {
+        let fixes = [
+            Fix::GameRule,
+            Fix::ServerRule(r"C:\My Games\ds3-blaze.exe".into()),
+            Fix::PrivateProfile(std::net::Ipv4Addr::new(26, 0, 0, 2)),
+        ];
+        assert_eq!(
+            fixes_args(&fixes),
+            [
+                "fix",
+                "several",
+                "--game-rule",
+                "--server-rule",
+                r"C:\My Games\ds3-blaze.exe",
+                "--network-profile",
+                "26.0.0.2"
+            ]
         );
     }
 

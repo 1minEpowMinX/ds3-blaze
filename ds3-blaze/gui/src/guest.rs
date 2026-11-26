@@ -4,7 +4,7 @@
 use crate::checks;
 use crate::link::Link;
 use crate::network::Network;
-use crate::step::{Button, Click, Detail, Footer, Status, Step};
+use crate::step::{self, Button, Click, Detail, Footer, Status, Step};
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_diag::netcheck::{Finding, Fix, Severity};
 use ds3_blaze_diag::p2p::{Outcome, Progress};
@@ -53,12 +53,21 @@ pub enum GuestInput {
 /// Work the guest's steps ask the window to carry out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GuestAction {
-    CheckNetwork { own: Ipv4Addr, peer: Ipv4Addr },
+    CheckNetwork {
+        own: Ipv4Addr,
+        peer: Ipv4Addr,
+    },
     ReadHosts,
     WriteHosts(Ipv4Addr),
-    Reach { host: Ipv4Addr, name: String },
-    Exchange { peer: Ipv4Addr },
-    ApplyFix(Fix),
+    Reach {
+        host: Ipv4Addr,
+        name: String,
+    },
+    Exchange {
+        peer: Ipv4Addr,
+    },
+    /// Applies the fixes in one elevated run.
+    ApplyFixes(Vec<Fix>),
     RestoreHosts,
 }
 
@@ -197,11 +206,8 @@ impl GuestFlow {
                 self.check_network()
             }
             Click::CheckAgain => self.start_exchange(now),
-            Click::Fix(fix) => {
-                self.elevation = Some(Elevation::Fix);
-                self.fix_error = None;
-                vec![GuestAction::ApplyFix(fix)]
-            }
+            Click::Fix(fix) => self.apply_fixes(vec![fix]),
+            Click::FixAll => self.apply_fixes(step::fixes(&self.steps)),
             Click::RestoreHosts => {
                 self.elevation = Some(Elevation::Restore);
                 self.steps[HOSTS].status = Status::Running;
@@ -210,6 +216,15 @@ impl GuestFlow {
             }
             _ => Vec::new(),
         }
+    }
+
+    fn apply_fixes(&mut self, fixes: Vec<Fix>) -> Vec<GuestAction> {
+        if fixes.is_empty() {
+            return Vec::new();
+        }
+        self.elevation = Some(Elevation::Fix);
+        self.fix_error = None;
+        vec![GuestAction::ApplyFixes(fixes)]
     }
 
     fn check_network(&mut self) -> Vec<GuestAction> {
@@ -394,6 +409,17 @@ impl GuestFlow {
             click: Click::Connect,
             enabled: idle,
         }];
+        self.steps[LINK]
+            .buttons
+            .retain(|button| button.click != Click::FixAll);
+        // One fix has its own button beside its finding.
+        if step::fixes(&self.steps).len() > 1 {
+            self.steps[LINK].buttons.push(Button {
+                label: "Fix it",
+                click: Click::FixAll,
+                enabled: idle,
+            });
+        }
     }
 
     fn draw_game(&mut self) {
@@ -732,12 +758,48 @@ mod tests {
     }
 
     #[test]
+    fn fix_all_applies_every_fix_once_in_the_rows_order() {
+        let mut flow = flow();
+        let now = Instant::now();
+        assert!(flow.apply(GuestInput::Click(Click::FixAll), now).is_empty());
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        let fixed = |severity, text: &str, fix| Finding {
+            fix: Some(fix),
+            ..finding(severity, text)
+        };
+        flow.apply(
+            GuestInput::Network(Ok(Network {
+                local: vec![
+                    fixed(Severity::Problem, "no game rule", Fix::GameRule),
+                    fixed(
+                        Severity::Warning,
+                        "public network",
+                        Fix::PrivateProfile(OWN),
+                    ),
+                    fixed(Severity::Problem, "no game rule again", Fix::GameRule),
+                ],
+                route: vec![finding(Severity::Ok, "the route takes the VPN")],
+                adapter: Some("Radmin VPN".into()),
+                other_vpn: Vec::new(),
+            })),
+            now,
+        );
+        assert_eq!(
+            flow.apply(GuestInput::Click(Click::FixAll), now),
+            [GuestAction::ApplyFixes(vec![
+                Fix::GameRule,
+                Fix::PrivateProfile(OWN)
+            ])]
+        );
+    }
+
+    #[test]
     fn a_fix_runs_elevated_then_the_check_again() {
         let mut flow = flow();
         let now = Instant::now();
         assert_eq!(
             flow.apply(GuestInput::Click(Click::Fix(Fix::GameRule)), now),
-            [GuestAction::ApplyFix(Fix::GameRule)]
+            [GuestAction::ApplyFixes(vec![Fix::GameRule])]
         );
         assert_eq!(
             flow.apply(GuestInput::Elevated(Ok(0)), now),

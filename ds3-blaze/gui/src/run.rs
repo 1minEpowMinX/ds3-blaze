@@ -59,8 +59,8 @@ pub async fn guest(action: GuestAction, send: impl Fn(GuestInput) + Send + Sync)
         GuestAction::RestoreHosts => {
             GuestInput::Elevated(elevate::run_cli(elevate::hosts_args(None)).await)
         }
-        GuestAction::ApplyFix(fix) => {
-            GuestInput::Elevated(elevate::run_cli(elevate::fix_args(&fix)).await)
+        GuestAction::ApplyFixes(fixes) => {
+            GuestInput::Elevated(elevate::run_cli(elevate::fixes_args(&fixes)).await)
         }
         GuestAction::Reach { host, name } => {
             GuestInput::Reach(reach::run(host, host, Ports::default(), Some(&name)).await)
@@ -96,8 +96,8 @@ pub async fn host(action: HostAction, send: impl Fn(HostInput) + Send + Sync) {
         HostAction::WriteHosts => HostInput::Elevated(
             elevate::run_cli(elevate::hosts_args(Some(Ipv4Addr::LOCALHOST))).await,
         ),
-        HostAction::ApplyFix(fix) => {
-            HostInput::Elevated(elevate::run_cli(elevate::fix_args(&fix)).await)
+        HostAction::ApplyFixes(fixes) => {
+            HostInput::Elevated(elevate::run_cli(elevate::fixes_args(&fixes)).await)
         }
         // The host's game reaches its server through 127.0.0.1, and the
         // guest through the VPN address, which this checks.

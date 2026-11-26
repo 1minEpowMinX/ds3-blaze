@@ -103,6 +103,19 @@ enum FixCommand {
         #[arg(long, value_name = "IP")]
         address: Ipv4Addr,
     },
+    /// Applies the fixes the flags name in one run, going on after a fix
+    /// that fails.
+    Several {
+        /// Adds the rule `game-rule` adds.
+        #[arg(long)]
+        game_rule: bool,
+        /// Adds the rule `server-rule` adds for the program at PATH.
+        #[arg(long, value_name = "PATH")]
+        server_rule: Option<PathBuf>,
+        /// Sets the network of the adapter holding IP to Private.
+        #[arg(long, value_name = "IP")]
+        network_profile: Option<Ipv4Addr>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -397,6 +410,9 @@ fn needing_administrator(err: io::Error) -> io::Error {
 }
 
 /// Carries out the fix `command` names.
+///
+/// `Several` applies each fix in turn, prints one line per fix and fails
+/// when any fix failed or when no flag names a fix.
 fn run_fix(command: FixCommand) -> io::Result<()> {
     let fix = match command {
         FixCommand::GameRule => Fix::GameRule,
@@ -404,9 +420,59 @@ fn run_fix(command: FixCommand) -> io::Result<()> {
             Fix::ServerRule(program.map_or_else(std::env::current_exe, Ok)?)
         }
         FixCommand::NetworkProfile { address } => Fix::PrivateProfile(address),
+        FixCommand::Several {
+            game_rule,
+            server_rule,
+            network_profile,
+        } => return run_several(&several(game_rule, server_rule, network_profile)),
     };
     fix::apply(&fix).map_err(needing_administrator)?;
     println!("done; net-check shows the new state");
+    Ok(())
+}
+
+/// Returns the fixes the flags of `fix several` name, in the order of the
+/// flags in the help.
+fn several(
+    game_rule: bool,
+    server_rule: Option<PathBuf>,
+    network_profile: Option<Ipv4Addr>,
+) -> Vec<Fix> {
+    let mut fixes = Vec::new();
+    if game_rule {
+        fixes.push(Fix::GameRule);
+    }
+    fixes.extend(server_rule.map(Fix::ServerRule));
+    fixes.extend(network_profile.map(Fix::PrivateProfile));
+    fixes
+}
+
+/// Applies each of `fixes`, printing its command and outcome, and fails
+/// naming how many failed when any did or when `fixes` is empty.
+fn run_several(fixes: &[Fix]) -> io::Result<()> {
+    if fixes.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "name at least one fix: --game-rule, --server-rule or --network-profile",
+        ));
+    }
+    let mut failed = 0;
+    for fix in fixes {
+        match fix::apply(fix).map_err(needing_administrator) {
+            Ok(()) => println!("{}: done", fix_command(fix)),
+            Err(err) => {
+                failed += 1;
+                println!("{}: {err}", fix_command(fix));
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(io::Error::other(format!(
+            "{failed} of {} fixes failed",
+            fixes.len()
+        )));
+    }
+    println!("net-check shows the new state");
     Ok(())
 }
 
@@ -621,6 +687,41 @@ mod tests {
             ),
             "ds3-blaze fix network-profile --address 26.0.0.1"
         );
+    }
+
+    #[test]
+    fn several_fixes_parse_in_the_order_of_the_flags() {
+        let cli = Cli::try_parse_from([
+            "ds3-blaze-cli",
+            "fix",
+            "several",
+            "--network-profile",
+            "26.0.0.2",
+            "--game-rule",
+        ])
+        .expect("the flags parse");
+        let Command::Fix(FixCommand::Several {
+            game_rule,
+            server_rule,
+            network_profile,
+        }) = cli.command
+        else {
+            panic!("not fix several");
+        };
+        assert_eq!(
+            several(game_rule, server_rule, network_profile),
+            [
+                Fix::GameRule,
+                Fix::PrivateProfile(Ipv4Addr::new(26, 0, 0, 2))
+            ]
+        );
+    }
+
+    #[test]
+    fn several_without_a_flag_names_no_fix() {
+        assert!(Cli::try_parse_from(["ds3-blaze-cli", "fix", "several"]).is_ok());
+        assert!(several(false, None, None).is_empty());
+        assert!(run_several(&[]).is_err());
     }
 
     #[test]

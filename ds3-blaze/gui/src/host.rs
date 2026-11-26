@@ -4,7 +4,7 @@
 use crate::checks;
 use crate::link::Link;
 use crate::network::Network;
-use crate::step::{Button, Click, Detail, Footer, PlayerRow, Status, Step};
+use crate::step::{self, Button, Click, Detail, Footer, PlayerRow, Status, Step};
 use ds3_blaze_core::game::SetupReason;
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_core::players::{Roster, check_nickname};
@@ -114,7 +114,8 @@ pub enum HostAction {
     OnlyAllowed(bool),
     /// Keeps the names the host gave.
     SaveNames(BTreeMap<Ipv4Addr, String>),
-    ApplyFix(Fix),
+    /// Applies the fixes in one elevated run.
+    ApplyFixes(Vec<Fix>),
     OpenLogs,
     /// Stops the server and points the game back at the EA servers.
     StopAndRestore,
@@ -306,11 +307,8 @@ impl HostFlow {
                 Some(guest) => self.start_exchange(guest, now),
                 None => Vec::new(),
             },
-            Click::Fix(fix) => {
-                self.elevation = Some(Elevation::Fix);
-                self.fix_error = None;
-                vec![HostAction::ApplyFix(fix)]
-            }
+            Click::Fix(fix) => self.apply_fixes(vec![fix]),
+            Click::FixAll => self.apply_fixes(step::fixes(&self.steps)),
             Click::RestoreHosts => {
                 self.elevation = Some(Elevation::Restore);
                 self.ports = None;
@@ -537,6 +535,15 @@ impl HostFlow {
         actions
     }
 
+    fn apply_fixes(&mut self, fixes: Vec<Fix>) -> Vec<HostAction> {
+        if fixes.is_empty() {
+            return Vec::new();
+        }
+        self.elevation = Some(Elevation::Fix);
+        self.fix_error = None;
+        vec![HostAction::ApplyFixes(fixes)]
+    }
+
     fn start_exchange(&mut self, guest: Ipv4Addr, now: Instant) -> Vec<HostAction> {
         self.guest = Some(guest);
         self.link.start();
@@ -711,6 +718,17 @@ impl HostFlow {
             click: Click::OpenLogs,
             enabled: true,
         }];
+        self.steps[LINK]
+            .buttons
+            .retain(|button| button.click != Click::FixAll);
+        // One fix has its own button beside its finding.
+        if step::fixes(&self.steps).len() > 1 {
+            self.steps[LINK].buttons.push(Button {
+                label: "Fix it",
+                click: Click::FixAll,
+                enabled: idle,
+            });
+        }
     }
 }
 
@@ -1019,6 +1037,32 @@ mod tests {
         assert_eq!(
             flow.apply(HostInput::Click(Click::OpenLogs), now),
             [HostAction::OpenLogs]
+        );
+    }
+
+    #[test]
+    fn fix_all_applies_the_fixes_the_rows_offer() {
+        let mut flow = flow();
+        let now = Instant::now();
+        assert!(flow.apply(HostInput::Click(Click::FixAll), now).is_empty());
+        flow.apply(
+            HostInput::Network(Ok(Network {
+                local: vec![Finding {
+                    severity: ds3_blaze_diag::netcheck::Severity::Problem,
+                    text: "no game rule".into(),
+                    fix: Some(Fix::GameRule),
+                }],
+                ..Network::default()
+            })),
+            now,
+        );
+        assert_eq!(
+            flow.apply(HostInput::Click(Click::Fix(Fix::GameRule)), now),
+            [HostAction::ApplyFixes(vec![Fix::GameRule])]
+        );
+        assert_eq!(
+            flow.apply(HostInput::Click(Click::FixAll), now),
+            [HostAction::ApplyFixes(vec![Fix::GameRule])]
         );
     }
 

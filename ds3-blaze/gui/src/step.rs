@@ -76,6 +76,8 @@ pub enum Click {
     StartServer,
     RestoreHosts,
     Fix(Fix),
+    /// Every fix the steps' findings offer, behind one prompt.
+    FixAll,
     CheckAgain,
     Allow(Ipv4Addr),
     /// A name typed for a player; an empty one clears the host's name.
@@ -120,6 +122,22 @@ impl Step {
     pub fn pill(&self) -> &'static str {
         self.pill.unwrap_or(self.status.label())
     }
+}
+
+/// Returns the fix of every finding in `steps` that has one, in the order
+/// the rows show them, each fix once.
+pub fn fixes(steps: &[Step]) -> Vec<Fix> {
+    let mut fixes = Vec::new();
+    for step in steps {
+        for detail in &step.details {
+            if let Detail::Finding(Finding { fix: Some(fix), .. }) = detail
+                && !fixes.contains(fix)
+            {
+                fixes.push(fix.clone());
+            }
+        }
+    }
+    fixes
 }
 
 /// The line under a mode's steps: what to tell the other player, and the
