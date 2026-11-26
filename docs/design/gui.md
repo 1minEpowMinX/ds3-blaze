@@ -39,7 +39,9 @@ Events go out on a `tokio::sync::broadcast` channel, one per process like the lo
 
 The `hosts` module carries the behaviour of `scripts/hosts.ps1` over to Rust: the section between `# Added by ds3-blaze` and `# End of ds3-blaze section`, removal of lines ending in the legacy marker, refusal when the section has no end line, the file's own encoding (a byte order mark if present, the ANSI code page otherwise) and line endings, the backup `hosts.ds3-blaze.bak` written without any ds3-blaze entries, and a DNS cache flush afterwards.
 
-The text transformation is a pure function, `rewrite(file, action)`, which takes the file's bytes and returns the updated file and the backup, so it is tested without touching the system file. Reading the current state (`EaServers`, `Redirected(address)`, `Broken`) needs no rights; writing needs an elevated process. The script is deleted once the module and the CLI command below replace it.
+The text transformation is a pure function, `rewrite(file, action)`, which takes the file's bytes and returns the updated file and the backup, so it is tested without touching the system file. Reading the current state (`EaServers`, `Redirected(address)`, `Broken`) needs no rights; writing needs an elevated process.
+
+Windows uses the first entry it finds for a name, so an entry for a redirected name outside the section, written by hand or by another program, wins over the section when it comes before it and takes the game elsewhere. The state reports such an entry and its line, so the GUI and `hosts status` can say which line to remove; the module never removes it, since it is not ds3-blaze's. The script is deleted once the module and the CLI command below replace it.
 
 ### VPN adapters
 
@@ -185,6 +187,7 @@ The README and the Nexus page still share the few sentences of the short start, 
 ## Tests
 
 - `hosts::rewrite`: with and without a byte order mark, ANSI text, CRLF and LF, an empty file, a file without a final line break, legacy-marker lines, a section without an end line, repeated `enable`.
+- `hosts::state`: an entry for a redirected name outside the section, before the section and after it, and a commented one.
 - `PlayerBook`: admission and naming rules as `Config::admits` and `Config::name_for` have them now, and changes while sessions are open.
 - The route part on parsed records: no route; the route through an adapter other than the chosen one, including one that `is_vpn` recognises; a gateway in between; a source address other than the chosen one; another VPN adapter up beside a passing route.
 - `p2p`: two exchanges on the loopback address with different ports, started a moment apart; one exchange whose port is already taken; the failure text of an exchange without answers, with and without another VPN adapter up.
@@ -201,7 +204,7 @@ Each stage is a branch of its own, merged into `main` when CI passes. A stage th
 2. `Server::start` with ports in the configuration, the protocol test, the `selftest` command and its CI step removed.
 3. Events, snapshot and `PlayerBook`; the core stops printing and the CLI prints the events.
 4. `clap`, the `hosts` module and `hosts` command, `scripts/hosts.ps1` removed.
-5. Diagnostics: findings and fixes, the route part tied to the chosen address, the `fix` command, `p2p` events, `reach`.
+5. Diagnostics: findings and fixes, the route part tied to the chosen address, the `fix` command, `p2p` events, `reach`, and the hosts state reporting entries for the redirector outside the section.
 6. The GUI, the guest's nickname sent to the host, and the renaming of the executables.
 7. README, Nexus page, network-checks and the docs index rewritten for the GUI.
 
