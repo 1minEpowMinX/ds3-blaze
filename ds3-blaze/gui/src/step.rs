@@ -12,17 +12,20 @@ pub enum Status {
     Ok,
     Warning,
     Failed,
+    /// A step that only shows what happened, with no outcome of its own.
+    Info,
 }
 
 impl Status {
-    /// Returns the word the status pill shows.
+    /// Returns the word of the status pill when the step names none.
     pub fn label(self) -> &'static str {
         match self {
             Status::Waiting => "waiting",
             Status::Running => "running",
             Status::Ok => "ok",
-            Status::Warning => "warning",
+            Status::Warning => "needs fix",
             Status::Failed => "failed",
+            Status::Info => "",
         }
     }
 }
@@ -35,12 +38,20 @@ pub enum Detail {
     Finding(Finding),
     /// A player the host's server knows.
     Player(PlayerRow),
+    /// A checkbox that gives `click` when it is ticked or cleared.
+    Toggle {
+        label: &'static str,
+        on: bool,
+        click: Click,
+    },
 }
 
 /// A player in the host's players step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerRow {
     pub address: Ipv4Addr,
+    /// Whether the row is the host's own.
+    pub you: bool,
     /// The name the host's server gives the player.
     pub name: String,
     /// The name the player sent, when it differs from `name`.
@@ -78,24 +89,43 @@ pub enum Click {
 /// A step of a mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
-    pub title: &'static str,
+    pub title: String,
     /// The line a collapsed row shows.
     pub summary: String,
     pub status: Status,
+    /// The word of the status pill, in place of the status's own.
+    pub pill: Option<&'static str>,
     pub details: Vec<Detail>,
+    /// The line beside the buttons under the details.
+    pub note: Option<String>,
     pub buttons: Vec<Button>,
 }
 
 impl Step {
     /// Returns a waiting step titled `title`, with no summary, details or
     /// buttons.
-    pub fn new(title: &'static str) -> Step {
+    pub fn new(title: &str) -> Step {
         Step {
-            title,
+            title: title.to_string(),
             summary: String::new(),
             status: Status::Waiting,
+            pill: None,
             details: Vec::new(),
+            note: None,
             buttons: Vec::new(),
         }
     }
+
+    /// Returns the word the status pill shows.
+    pub fn pill(&self) -> &'static str {
+        self.pill.unwrap_or(self.status.label())
+    }
+}
+
+/// The line under a mode's steps: what to tell the other player, and the
+/// button that ends the mode's changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Footer {
+    pub text: String,
+    pub button: Button,
 }

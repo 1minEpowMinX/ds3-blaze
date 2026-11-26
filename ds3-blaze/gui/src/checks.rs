@@ -1,28 +1,42 @@
 //! Turning check results into what a step shows.
 
-use crate::step::{Detail, Status};
+use crate::step::{Detail, Status, Step};
 use ds3_blaze_diag::netcheck::{Finding, Severity};
 use ds3_blaze_diag::reach::{Report, Stage};
-
-/// Returns the status `findings` give a step: a warning for a warning or a
-/// problem, ok otherwise.
-///
-/// A problem makes a warning rather than a failure because the steps after it
-/// still run; a step that stops them sets its failure itself.
-pub fn status_of(findings: &[Finding]) -> Status {
-    if findings
-        .iter()
-        .any(|finding| matches!(finding.severity, Severity::Warning | Severity::Problem))
-    {
-        Status::Warning
-    } else {
-        Status::Ok
-    }
-}
 
 /// Returns `findings` as details.
 pub fn details(findings: &[Finding]) -> Vec<Detail> {
     findings.iter().cloned().map(Detail::Finding).collect()
+}
+
+/// Puts `findings` at the head of `step`'s details and, unless the step runs
+/// or ended well, makes the number of issues among them its summary and the
+/// step a warning.
+///
+/// A step that failed moves its summary into the details.
+pub fn add_findings(step: &mut Step, findings: &[Finding]) {
+    let mut lines = details(findings);
+    lines.append(&mut step.details);
+    step.details = lines;
+    let issues = findings
+        .iter()
+        .filter(|finding| matches!(finding.severity, Severity::Warning | Severity::Problem))
+        .count();
+    if issues == 0 || matches!(step.status, Status::Running | Status::Ok) {
+        return;
+    }
+    if step.status == Status::Failed {
+        let failure = std::mem::take(&mut step.summary);
+        step.details.push(Detail::Text(failure));
+    }
+    // The issues name what to change, so the step asks for a fix rather
+    // than reporting a failure.
+    step.status = Status::Warning;
+    step.pill = Some("needs fix");
+    step.summary = match issues {
+        1 => "1 issue found".into(),
+        issues => format!("{issues} issues found"),
+    };
 }
 
 /// Returns a `reach` stage as a finding: ok when it passed, a warning for a
@@ -61,13 +75,31 @@ mod tests {
     }
 
     #[test]
-    fn warnings_and_problems_make_a_warning() {
+    fn issues_lead_a_step_that_waits_or_failed() {
+        let findings = [finding(Severity::Ok), finding(Severity::Warning)];
+        let mut waiting = Step::new("Direct link");
+        add_findings(&mut waiting, &findings);
+        assert_eq!(waiting.status, Status::Warning);
+        assert_eq!(waiting.summary, "1 issue found");
+        assert_eq!(waiting.details.len(), 2);
+
+        let mut failed = Step::new("Direct link");
+        failed.status = Status::Failed;
+        failed.summary = "no answer".into();
+        add_findings(&mut failed, &findings);
+        assert_eq!(failed.status, Status::Warning);
+        assert_eq!(failed.pill(), "needs fix");
         assert_eq!(
-            status_of(&[finding(Severity::Ok), finding(Severity::Note)]),
-            Status::Ok
+            failed.details.last(),
+            Some(&Detail::Text("no answer".into()))
         );
-        assert_eq!(status_of(&[finding(Severity::Warning)]), Status::Warning);
-        assert_eq!(status_of(&[finding(Severity::Problem)]), Status::Warning);
+
+        let mut working = Step::new("Direct link");
+        working.status = Status::Ok;
+        working.summary = "both ways".into();
+        add_findings(&mut working, &findings);
+        assert_eq!(working.summary, "both ways");
+        assert_eq!(working.details.len(), 2);
     }
 
     #[test]

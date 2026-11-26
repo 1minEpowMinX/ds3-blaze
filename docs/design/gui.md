@@ -103,7 +103,11 @@ The start screen asks for the player's name and VPN address (from `vpn`, VPN ada
 
 ### Step rows
 
-Both modes are built from one widget: a row with a step marker, a title, a one-line summary, a status pill and a chevron, laid out left to right like a table row. A click expands the row to its details, where a warning lists its findings with their fix buttons. Rows stay as the player left them: the GUI does not expand or collapse them by itself.
+Both modes are built from one widget: a row with a step marker, a title, a one-line summary, a status pill and a chevron, laid out left to right like a table row. A click on the line expands the row to a panel with its details: findings with their fix buttons, then a note and the step's buttons, such as "Check again". Rows stay as the player left them: the GUI does not expand or collapse them by itself.
+
+The first row of a mode is where the player acts: it holds the address field and the button that starts the steps in place of the summary, and shows the summary below them only while the step runs or went wrong. The rows after it are numbered. A header names the mode and the player, with Back while nothing runs; a footer says what to tell the other player and holds the button that ends the mode's changes.
+
+The network check's findings show with the direct link, since the firewall rules and the network category decide whether the exchange gets through: the address row only answers whether the route is right.
 
 A mode is a list of steps. Each step owns its state (waiting, running, ok, warning, failed), its summary, its pill and its expanded view; the rendering only reads them. The step logic therefore has unit tests without a window.
 
@@ -113,27 +117,27 @@ The summary carries the information a player watches during play, so a collapsed
 
 | Step | Summary when done | Expanded |
 |---|---|---|
-| Your VPN address | address and adapter; "Start server" | the local part's findings with fixes |
-| Point game at this PC | hosts → 127.0.0.1 | the entry, the backup, "Restore EA servers" |
+| Your VPN address | a list of this PC's addresses, the chosen one first; "Start server" | none |
+| Point game at this PC | hosts → 127.0.0.1 | the entry and the backup |
 | Server | listening on the VPN address | the three listeners; `reach` against the VPN address |
-| Players | who is connected, how many are waiting | names editable in place, an emptied name returning to the guest's own; a guest's own nickname beside a name the host set, with "Use this name"; "Allow" for refused addresses, "Only players I allow" |
-| Direct link to the guest | both directions and latency | the route part for the guest's address, the exchange, findings with fixes, "Check again" |
+| Players | who is connected, how many are waiting | the host's own row, then names editable in place, an emptied name returning to the guest's own; a guest's own nickname beside a name the host set, with "Use this name"; "Allow" for refused addresses, "Only players I allow" |
+| Direct link to the guest, named once known | both directions; "N issues found" while findings need a fix | the local part's findings and the route part for the guest's address, with fixes; the exchange; "Check again" |
 | Room | visibility, players, chapter | chapter and restore point, how the guest joined; before a room exists, the step tells the host to start the game and create one |
 | Log | the latest line | recent lines, "Open logs folder" |
 
-"Stop and restore hosts" stops the server and removes the hosts entry.
+The footer gives the address guests connect to. Its "Stop and restore hosts" stops the server and removes the hosts entry.
 
 ### Guest steps
 
 | Step | Summary when done | Expanded |
 |---|---|---|
-| Host's VPN address | the address and the adapter the route takes; "Connect" | the local part and the route part for the host's address, with fixes |
-| Point game at host | hosts → the host's address | the entry, the backup, "Restore EA servers" |
+| Host's VPN address | the address field; "Connect" | none |
+| Point game at host | hosts → the host's address | the entry and the backup |
 | Reach host's server | all services answer; the name the host sees | each `reach` stage with its result |
-| Direct link to host | both directions and latency | the exchange, findings with fixes, "Check again" |
+| Direct link to host | both directions; "N issues found" while findings need a fix | the local part and the route part for the host's address, with fixes; the exchange; "Check again" |
 | Start Dead Space 3 | online co-op | quick match for a public game, the EA App invite for a private one |
 
-"Disconnect and restore hosts" removes the hosts entry.
+The footer gives the name the host's server shows for the guest once `reach` has asked. Its "Disconnect and restore hosts" removes the hosts entry.
 
 ### Order of the steps
 

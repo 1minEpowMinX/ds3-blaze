@@ -4,7 +4,7 @@
 use crate::checks;
 use crate::link::Link;
 use crate::network::Network;
-use crate::step::{Button, Click, Detail, PlayerRow, Status, Step};
+use crate::step::{Button, Click, Detail, Footer, PlayerRow, Status, Step};
 use ds3_blaze_core::game::SetupReason;
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_core::players::{Roster, check_nickname};
@@ -39,6 +39,9 @@ const TITLES: [&str; 7] = [
 
 /// Number of recent log lines the log step keeps.
 pub const LOG_LINES: usize = 100;
+
+/// What the open link step says beside "Check again".
+const LINK_NOTE: &str = "The guest's Connect starts the same check here";
 
 /// What the host's link step adds when nothing arrived either way.
 const SILENT_HINT: &str = "the guest's check runs when the guest presses Connect; \
@@ -135,7 +138,11 @@ pub struct HostFlow {
     trigger: Trigger,
     /// The guest the last exchange ran with.
     guest: Option<Ipv4Addr>,
+    /// What the network check found on this PC.
+    local: Vec<Finding>,
     route: Vec<Finding>,
+    /// The error of applying the last fix.
+    fix_error: Option<String>,
     link: Link,
     other_vpn: Vec<String>,
     elevation: Option<Elevation>,
@@ -165,7 +172,9 @@ impl HostFlow {
             steps: TITLES.iter().map(|title| Step::new(title)).collect(),
             trigger: Trigger::default(),
             guest: None,
+            local: Vec::new(),
             route: Vec::new(),
+            fix_error: None,
             link: Link::default(),
             other_vpn: Vec::new(),
             elevation: None,
@@ -178,8 +187,29 @@ impl HostFlow {
             log: VecDeque::new(),
             refused_name: None,
         };
+        flow.draw_link(Instant::now());
+        flow.draw_log();
         flow.draw_buttons();
         flow
+    }
+
+    /// Returns this PC's VPN address.
+    pub fn own(&self) -> Ipv4Addr {
+        self.own
+    }
+
+    /// Returns the line under the steps: the address guests connect to, and
+    /// the button that stops the server and restores the EA servers.
+    pub fn footer(&self) -> Footer {
+        Footer {
+            text: format!("Guests connect to {}", self.own),
+            button: Button {
+                label: "Stop and restore hosts",
+                click: Click::RestoreHosts,
+                enabled: !self.busy()
+                    && (self.serving() || self.steps[HOSTS].status != Status::Waiting),
+            },
+        }
     }
 
     /// Returns the steps in the order they run.
@@ -203,7 +233,7 @@ impl HostFlow {
     pub fn apply(&mut self, input: HostInput, now: Instant) -> Vec<HostAction> {
         let actions = match input {
             HostInput::Click(click) => self.click(click, now),
-            HostInput::Network(network) => self.network(network),
+            HostInput::Network(network) => self.network(network, now),
             HostInput::Route(network) => {
                 self.route = match network {
                     Ok(network) => {
@@ -220,7 +250,7 @@ impl HostFlow {
                 Vec::new()
             }
             HostInput::Hosts(state) => self.hosts(state),
-            HostInput::Elevated(result) => self.elevated(result),
+            HostInput::Elevated(result) => self.elevated(result, now),
             HostInput::Started(result) => self.started(result),
             HostInput::SelfReach(reports) => {
                 self.self_reach(&reports);
@@ -278,6 +308,7 @@ impl HostFlow {
             },
             Click::Fix(fix) => {
                 self.elevation = Some(Elevation::Fix);
+                self.fix_error = None;
                 vec![HostAction::ApplyFix(fix)]
             }
             Click::RestoreHosts => {
@@ -338,7 +369,7 @@ impl HostFlow {
         vec![HostAction::CheckNetwork { own: self.own }]
     }
 
-    fn network(&mut self, network: io::Result<Network>) -> Vec<HostAction> {
+    fn network(&mut self, network: io::Result<Network>, now: Instant) -> Vec<HostAction> {
         let step = &mut self.steps[ADDRESS];
         match network {
             Err(err) => {
@@ -346,13 +377,14 @@ impl HostFlow {
                 step.summary = format!("the network check failed to run: {err}");
             }
             Ok(network) => {
-                step.details = checks::details(&network.local);
-                step.status = checks::status_of(&network.local);
+                step.status = Status::Ok;
                 step.summary = match network.adapter {
                     Some(adapter) => format!("{} on {adapter}", self.own),
                     None => self.own.to_string(),
                 };
+                self.local = network.local;
                 self.other_vpn = network.other_vpn;
+                self.draw_link(now);
             }
         }
         if !self.starting {
@@ -394,6 +426,7 @@ impl HostFlow {
         match state {
             Ok(State::Redirected(address)) if address == Ipv4Addr::LOCALHOST => {
                 step.status = Status::Ok;
+                step.pill = Some("done");
                 step.summary = format!("hosts → {address}");
                 let server = &mut self.steps[SERVER];
                 server.status = Status::Running;
@@ -423,13 +456,14 @@ impl HostFlow {
         }
     }
 
-    fn elevated(&mut self, result: io::Result<i32>) -> Vec<HostAction> {
+    fn elevated(&mut self, result: io::Result<i32>, now: Instant) -> Vec<HostAction> {
         self.elevation_error = result.err().map(|err| err.to_string());
         match self.elevation.take() {
             Some(Elevation::Hosts) => vec![HostAction::ReadHosts],
             Some(Elevation::Fix) => match self.elevation_error.take() {
                 Some(err) => {
-                    self.steps[ADDRESS].summary = err;
+                    self.fix_error = Some(err);
+                    self.draw_link(now);
                     Vec::new()
                 }
                 None => self.check_network(),
@@ -484,6 +518,7 @@ impl HostFlow {
             }
             None => {
                 step.status = Status::Ok;
+                step.pill = Some("running");
                 step.summary = format!("listening on {}", self.own);
             }
         }
@@ -511,14 +546,30 @@ impl HostFlow {
     }
 
     fn draw_link(&mut self, now: Instant) {
-        let mut step = self.link.step(TITLES[LINK], now, SILENT_HINT);
-        if let Some(guest) = self.guest {
-            let mut details = vec![Detail::Text(format!("the guest at {guest}"))];
-            details.extend(checks::details(&self.route));
-            details.append(&mut step.details);
-            step.details = details;
-        } else {
+        let title = match self.guest {
+            Some(guest) => format!(
+                "Direct link to {}",
+                self.snapshot.roster.name_for(guest, self.own)
+            ),
+            None => TITLES[LINK].into(),
+        };
+        let mut step = self.link.step(&title, now, SILENT_HINT);
+        if self.guest.is_none() {
             step.summary = "starts when the guest connects".into();
+        }
+        if self.guest.is_some() || !self.local.is_empty() {
+            step.note = Some(LINK_NOTE.into());
+        }
+        let mut findings = self.local.clone();
+        findings.extend(self.route.iter().cloned());
+        checks::add_findings(&mut step, &findings);
+        if let Some(guest) = self.guest {
+            step.details
+                .insert(0, Detail::Text(format!("the guest at {guest}")));
+        }
+        if let Some(error) = &self.fix_error {
+            step.details
+                .push(Detail::Text(format!("the fix failed: {error}")));
         }
         self.steps[LINK] = step;
     }
@@ -535,7 +586,7 @@ impl HostFlow {
             .collect();
         addresses.extend(snapshot.refused.iter().copied().filter(others));
         addresses.extend(roster.offered.keys().copied().filter(others));
-        let rows: Vec<PlayerRow> = addresses
+        let mut rows: Vec<PlayerRow> = addresses
             .into_iter()
             .map(|address| {
                 let name = roster.name_for(address, self.own);
@@ -546,6 +597,7 @@ impl HostFlow {
                     .cloned();
                 PlayerRow {
                     address,
+                    you: false,
                     name,
                     offered,
                     connected: snapshot.sessions.iter().any(|s| s.address == address),
@@ -553,12 +605,27 @@ impl HostFlow {
                 }
             })
             .collect();
-        let connected: Vec<&str> = rows
+        let connected: Vec<String> = rows
             .iter()
             .filter(|row| row.connected)
-            .map(|row| row.name.as_str())
+            .map(|row| row.name.clone())
             .collect();
         let waiting = snapshot.refused.len();
+        if self.serving() {
+            rows.insert(
+                0,
+                PlayerRow {
+                    address: self.own,
+                    you: true,
+                    name: self.name.clone(),
+                    offered: None,
+                    connected: true,
+                    refused: false,
+                },
+            );
+        }
+        let only_allowed = roster.only_allowed;
+        let serving = self.serving();
         let step = &mut self.steps[PLAYERS];
         step.summary = match (connected.is_empty(), waiting) {
             (true, 0) => "no guest yet".into(),
@@ -566,16 +633,28 @@ impl HostFlow {
             (false, 0) => format!("{} connected", connected.join(", ")),
             (false, waiting) => format!("{} connected · {waiting} waiting", connected.join(", ")),
         };
-        step.status = if waiting > 0 {
-            Status::Warning
+        (step.status, step.pill) = if waiting > 0 {
+            (Status::Warning, Some("review"))
         } else if connected.is_empty() {
-            Status::Waiting
+            (Status::Waiting, None)
         } else {
-            Status::Ok
+            (Status::Ok, Some("online"))
         };
         step.details = rows.into_iter().map(Detail::Player).collect();
         if let Some(refused) = &self.refused_name {
             step.details.push(Detail::Text(refused.clone()));
+        }
+        if serving {
+            step.details.push(Detail::Toggle {
+                label: "Only players I allow",
+                on: only_allowed,
+                click: Click::OnlyAllowed(!only_allowed),
+            });
+        }
+        // The link's title names the guest by the name just drawn.
+        if let Some(guest) = self.guest {
+            let name = format!("Direct link to {}", roster.name_for(guest, self.own));
+            self.steps[LINK].title = name;
         }
     }
 
@@ -593,6 +672,7 @@ impl HostFlow {
             return;
         };
         step.status = Status::Ok;
+        step.pill = Some("in game");
         step.summary = room_summary(room);
         if let Some(checkpoint) = room.checkpoint {
             step.details.push(Detail::Text(format!(
@@ -613,6 +693,7 @@ impl HostFlow {
 
     fn draw_log(&mut self) {
         let step = &mut self.steps[LOG];
+        step.status = Status::Info;
         step.summary = self.log.back().cloned().unwrap_or_default();
         step.details = self.log.iter().cloned().map(Detail::Text).collect();
     }
@@ -625,25 +706,6 @@ impl HostFlow {
             click: Click::StartServer,
             enabled: idle && !self.serving(),
         }];
-        self.steps[HOSTS].buttons = vec![Button {
-            label: "Stop and restore hosts",
-            click: Click::RestoreHosts,
-            enabled: idle,
-        }];
-        let only_allowed = self.snapshot.roster.only_allowed;
-        self.steps[PLAYERS].buttons = if self.serving() {
-            vec![Button {
-                label: if only_allowed {
-                    "Admit everyone"
-                } else {
-                    "Only players I allow"
-                },
-                click: Click::OnlyAllowed(!only_allowed),
-                enabled: true,
-            }]
-        } else {
-            Vec::new()
-        };
         self.steps[LOG].buttons = vec![Button {
             label: "Open logs folder",
             click: Click::OpenLogs,
@@ -695,7 +757,7 @@ mod tests {
             .details
             .iter()
             .filter_map(|detail| match detail {
-                Detail::Player(row) => Some(row.clone()),
+                Detail::Player(row) if !row.you => Some(row.clone()),
                 _ => None,
             })
             .collect()
@@ -878,6 +940,26 @@ mod tests {
                 .iter()
                 .any(|detail| matches!(detail, Detail::Text(text) if text.contains("is refused")))
         );
+    }
+
+    #[test]
+    fn a_running_server_lists_the_host_first_with_the_admission_toggle() {
+        let mut flow = flow();
+        let now = Instant::now();
+        flow.apply(HostInput::Started(Ok(Ports::default())), now);
+        let details = &flow.steps()[PLAYERS].details;
+        assert!(matches!(&details[0], Detail::Player(row) if row.you && row.address == OWN));
+        assert!(matches!(
+            details.last(),
+            Some(Detail::Toggle {
+                click: Click::OnlyAllowed(true),
+                ..
+            })
+        ));
+        assert_eq!(flow.footer().text, format!("Guests connect to {OWN}"));
+        assert!(!flow.footer().button.enabled);
+        flow.apply(HostInput::SelfReach(Vec::new()), now);
+        assert!(flow.footer().button.enabled);
     }
 
     #[test]

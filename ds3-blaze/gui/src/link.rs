@@ -2,7 +2,7 @@
 //! port, its countdown and its outcome.
 
 use crate::step::{Button, Click, Detail, Status, Step};
-use ds3_blaze_diag::p2p::{Outcome, Progress};
+use ds3_blaze_diag::p2p::{self, Outcome, Progress};
 use std::io;
 use std::time::Instant;
 
@@ -40,6 +40,12 @@ impl Link {
         !self.running && matches!(self.result, Some(Ok(_))) && self.failure.is_none()
     }
 
+    /// Returns whether the last exchange ended without both directions
+    /// working.
+    pub fn failed(&self) -> bool {
+        !self.running && self.result.is_some() && !self.works()
+    }
+
     /// Takes a progress report of the running exchange.
     pub fn progress(&mut self, progress: Progress) {
         match progress {
@@ -65,7 +71,7 @@ impl Link {
     /// Returns the step titled `title` as the exchange stands at `now`.
     ///
     /// `silent_hint` is added when nothing arrived either way.
-    pub fn step(&self, title: &'static str, now: Instant, silent_hint: &str) -> Step {
+    pub fn step(&self, title: &str, now: Instant, silent_hint: &str) -> Step {
         let mut step = Step::new(title);
         let mut directions = Vec::new();
         if self.peer_reaches_this_pc {
@@ -109,7 +115,7 @@ impl Link {
         match &self.failure {
             None => {
                 step.status = Status::Ok;
-                step.summary = "both directions work".into();
+                step.summary = format!("UDP {} both ways", p2p::GAME_PORT);
             }
             Some(failure) => {
                 step.status = Status::Failed;
