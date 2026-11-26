@@ -16,7 +16,7 @@ mismatch. Omitted, the version is not checked.
 Directory the archive is written to. Defaults to dist\ in the repository root.
 
 .PARAMETER SkipBuild
-Packs the existing target\release\ds3-blaze.exe without running cargo.
+Packs the existing release executable without running cargo.
 
 .OUTPUTS
 The full path of the archive.
@@ -35,10 +35,13 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Manifest = Join-Path $Root 'ds3-blaze\Cargo.toml'
 if (-not $OutDir) { $OutDir = Join-Path $Root 'dist' }
 
-# cargo owns the name, version and target directory; nothing here repeats them.
+# cargo owns the names, version and target directory; nothing here repeats them
+# except the package that builds the players' executable.
 $metadata = cargo metadata --no-deps --format-version 1 --manifest-path $Manifest | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
-$package = $metadata.packages[0]
+$package = $metadata.packages | Where-Object name -eq 'ds3-blaze-cli'
+if (-not $package) { throw 'package ds3-blaze-cli not found in the workspace' }
+$bin = ($package.targets | Where-Object { $_.kind -contains 'bin' }).name
 $version = $package.version
 if ($Tag -and $Tag -ne "v$version") {
     throw "tag $Tag does not match crate version $version (expected v$version)"
@@ -49,17 +52,17 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 }
 
-$exe = Join-Path $metadata.target_directory "release\$($package.name).exe"
+$exe = Join-Path $metadata.target_directory "release\$bin.exe"
 if (-not (Test-Path $exe)) { throw "$exe not found; build without -SkipBuild" }
 
 $entries = [ordered]@{
-    "$($package.name).exe" = $exe
+    "$bin.exe"             = $exe
     'scripts/hosts.ps1'    = Join-Path $Root 'ds3-blaze\scripts\hosts.ps1'
     'README.md'            = Join-Path $Root 'README.md'
     'LICENSE'              = Join-Path $Root 'LICENSE'
 }
 
-$name = "$($package.name)-$version-windows-x64"
+$name = "$bin-$version-windows-x64"
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $archive = Join-Path (Resolve-Path $OutDir).Path "$name.zip"
 if (Test-Path $archive) { Remove-Item -Force $archive }

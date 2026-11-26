@@ -1,0 +1,26 @@
+[package]
+name = "ds3-blaze-cli"
+description = "Local Blaze server for Dead Space 3 co-op over VPN"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Players, the README, CI and the release workflow know the executable by this
+# name; the GUI takes it over in stage 6 of docs/plans/2026-11-26-gui.md.
+[[bin]]
+name = "ds3-blaze"
+path = "src/main.rs"
+
+[dependencies]
+blaze-ssl-async.workspace = true
+tdf.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+# A paused clock for the session timeout tests.
+tokio = { workspace = true, features = ["test-util"] }

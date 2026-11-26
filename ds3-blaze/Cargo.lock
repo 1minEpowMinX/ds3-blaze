@@ -173,7 +173,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ds3-blaze"
+name = "ds3-blaze-cli"
 version = "0.1.0"
 dependencies = [
  "blaze-ssl-async",
