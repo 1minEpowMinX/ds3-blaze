@@ -39,7 +39,7 @@ Events go out on a `tokio::sync::broadcast` channel, one per process like the lo
 
 The `hosts` module carries the behaviour of `scripts/hosts.ps1` over to Rust: the section between `# Added by ds3-blaze` and `# End of ds3-blaze section`, removal of lines ending in the legacy marker, refusal when the section has no end line, the file's own encoding (a byte order mark if present, the ANSI code page otherwise) and line endings, the backup `hosts.ds3-blaze.bak` written without any ds3-blaze entries, and a DNS cache flush afterwards.
 
-The text transformation is a pure function, `rewrite(text, action) -> (updated, backup)`, so it is tested without touching the system file. Reading the current state (`EaServers`, `Redirected(address)`, `Broken`) needs no rights; writing needs an elevated process. The script is deleted once the module and the CLI command below replace it.
+The text transformation is a pure function, `rewrite(file, action)`, which takes the file's bytes and returns the updated file and the backup, so it is tested without touching the system file. Reading the current state (`EaServers`, `Redirected(address)`, `Broken`) needs no rights; writing needs an elevated process. The script is deleted once the module and the CLI command below replace it.
 
 ### VPN adapters
 
