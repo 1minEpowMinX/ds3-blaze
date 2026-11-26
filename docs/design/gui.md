@@ -162,10 +162,10 @@ The crate keeps the two apart by folder. `gui/src/flow` holds the modes' state m
 | Room | the room's state and how many of its places are taken; before a room exists, "Start Dead Space 3 and create a game"; while the check with the guest runs, to wait before starting the game |
 | Progress | the chapter and restore point read from `GAME_CHECKPOINT` |
 | Matchmaking | whether the room is open to matchmaking |
-| Players | the host's own row; each connected guest with its address and its name in a field to rename it in place, an emptied name returning to the guest's own, and beside a name the host set the guest's own nickname with "Use this name"; each refused address as someone turned away, with the nickname it sent and "Let in"; the switch "Only let in players I approve" |
+| Players | the host's own row; each connected guest with its name and address, Rename opening a field in the name's place, an emptied name returning to the guest's own, and beside a name the host set the guest's own nickname with "Use this name"; each refused address as someone turned away, with the nickname it sent and "Let in"; the switch "Only let in players I approve" |
 | Log | the last `SESSION_LOG_LINES` lines, "Open logs folder" |
 
-A refused address has no name field; it gets one once it is let in.
+A refused address has no name to change; Rename comes once it is let in.
 
 ### Guest steps
 
@@ -191,7 +191,7 @@ The GUI does not block the game from starting during a check. A passing run ends
 
 Writing the hosts file and applying fixes need administrator rights; the GUI itself runs without them, so the server never runs elevated. The GUI starts `ds3-blaze-cli.exe` next to itself through `ShellExecuteExW` with the verb `runas` (one UAC prompt per action), waits for it, and then checks the outcome by reading the state again: the hosts state needs no rights, and the network findings come from the local check.
 
-A button that starts such a run carries a shield before its label and the hover text "Windows asks for permission"; the flow that builds the button marks it (`Button::elevates`), and `row::action`, the one function that draws a `Button`, draws the shield. A disabled button gives the reason on hover (`Button::disabled`).
+A button that starts such a run carries a shield before its label and the hover text "Windows asks for permission"; the flow that builds the button marks it (`Button::elevates`), and `row::action`, the one function that draws a `Button`, draws the shield. The main button sets it on a dark disc, since the glyph's own blue is lost on the accent. A disabled button gives the reason on hover (`Button::disabled`).
 
 ### Settings
 

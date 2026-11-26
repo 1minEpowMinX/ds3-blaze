@@ -28,6 +28,10 @@ const SHIELD: &str = "\u{1F6E1}";
 /// Space between the shield and the label, in points.
 const SHIELD_GAP: f32 = 6.0;
 
+/// Space between the shield and the edge of the disc it sits on in a main
+/// button, in points.
+const DISC_PADDING: f32 = 3.5;
+
 /// What an elevating button says on hover.
 const PERMISSION: &str = "Windows asks for permission";
 
@@ -202,21 +206,22 @@ pub fn main_action(ui: &mut egui::Ui, button: &Button, height: f32) -> bool {
 fn draw(ui: &mut egui::Ui, button: &Button, height: f32, main: bool) -> bool {
     let font_id = egui::TextStyle::Button.resolve(ui.style());
     let shield = button.elevates.then(|| {
-        let colour = match (button.enabled(), main) {
-            (false, _) => GREY,
-            (true, true) => ON_ACCENT,
-            (true, false) => ACCENT,
-        };
+        let colour = if button.enabled() { ACCENT } else { GREY };
         // The colour applies only where the system has no colour emoji font.
         ui.painter()
             .layout_no_wrap(SHIELD.to_owned(), font_id.clone(), colour)
     });
+    // On the accent the glyph's own blue is lost, so a main button sets it
+    // on a dark disc.
+    let disc = |ink: egui::Rect| ink.width().max(ink.height()) + 2.0 * DISC_PADDING;
+    let lead = shield.as_ref().map_or(0.0, |shield| {
+        let ink = shield.mesh_bounds;
+        (if main { disc(ink) } else { ink.width() }) + SHIELD_GAP
+    });
     let mut job = LayoutJob::default();
     job.append(
         button.label,
-        shield
-            .as_ref()
-            .map_or(0.0, |shield| shield.mesh_bounds.width() + SHIELD_GAP),
+        lead,
         TextFormat {
             font_id,
             // The placeholder takes the button's own text colour.
@@ -228,26 +233,37 @@ fn draw(ui: &mut egui::Ui, button: &Button, height: f32, main: bool) -> bool {
             ..TextFormat::default()
         },
     );
+    let label_width = ui.painter().layout_job(job.clone()).size().x;
+    let padding = theme::button_padding(ui, label_width);
     let mut widget = egui::Button::new(job).min_size(vec2(0.0, height));
     if main {
         widget = widget.fill(ACCENT).stroke(Stroke::NONE);
     }
-    let response = ui.add_enabled(button.enabled(), widget);
+    let response = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding.x = padding;
+            ui.add_enabled(button.enabled(), widget)
+        })
+        .inner;
     if main && response.hovered() && button.enabled() {
         ui.painter()
             .rect_filled(response.rect, 8, Color32::WHITE.gamma_multiply(0.08));
     }
     if let Some(shield) = shield {
-        // The emoji font's line is taller than the label's, so the glyph is
-        // centred on its own ink rather than on its line.
-        let ink = shield.mesh_bounds;
-        let left = response.rect.left() + ui.spacing().button_padding.x;
-        let pos = pos2(left - ink.left(), response.rect.center().y - ink.center().y);
         let mut painter = ui.painter().clone();
         if !button.enabled() {
             painter.multiply_opacity(ui.visuals().disabled_alpha());
         }
-        painter.galley(pos, shield, GREY);
+        // The emoji font's line is taller than the label's, so the glyph is
+        // centred on its own ink rather than on its line.
+        let ink = shield.mesh_bounds;
+        let left = response.rect.left() + padding;
+        let width = if main { disc(ink) } else { ink.width() };
+        let centre = pos2(left + width / 2.0, response.rect.center().y);
+        if main {
+            painter.circle_filled(centre, width / 2.0, ON_ACCENT);
+        }
+        painter.galley(centre - ink.center().to_vec2(), shield, GREY);
     }
     let response = match button.disabled {
         Some(reason) => response.on_disabled_hover_text(reason),

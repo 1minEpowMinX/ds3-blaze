@@ -105,7 +105,7 @@ fn address(form: &mut Form, ui: &mut egui::Ui, click: &mut Option<StartClick>) -
                 ui.label(RichText::new(name).color(WEAK));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let label = if form.choosing { "Done" } else { "Change" };
-                    if ui.small_button(label).clicked() {
+                    if theme::button(ui, label).clicked() {
                         form.choosing = !form.choosing;
                     }
                 });
@@ -117,7 +117,7 @@ fn address(form: &mut Form, ui: &mut egui::Ui, click: &mut Option<StartClick>) -
                     ui.label(RichText::new(problem).color(ORANGE));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.small_button("Read adapters again").clicked() {
+                    if theme::button(ui, "Read adapters again").clicked() {
                         *click = Some(StartClick::ReadAdapters);
                     }
                 });
@@ -157,10 +157,10 @@ fn address_list(form: &mut Form, ui: &mut egui::Ui, click: &mut Option<StartClic
             });
         }
         ui.horizontal(|ui| {
-            if !form.all && ui.small_button("Show all adapters").clicked() {
+            if !form.all && theme::button(ui, "Show all adapters").clicked() {
                 form.all = true;
             }
-            if ui.small_button("Read adapters again").clicked() {
+            if theme::button(ui, "Read adapters again").clicked() {
                 *click = Some(StartClick::ReadAdapters);
             }
         });

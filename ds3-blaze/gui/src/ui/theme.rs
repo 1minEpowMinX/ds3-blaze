@@ -46,6 +46,9 @@ pub const COLUMN: f32 = 640.0;
 /// Corner radius of a card.
 pub const CARD_RADIUS: u8 = 12;
 
+/// Narrowest a button gets, in points.
+const BUTTON_WIDTH: f32 = 88.0;
+
 /// Sets the colours, type sizes and spacing every screen is drawn with.
 pub fn apply(ctx: &egui::Context) {
     ctx.set_visuals(visuals());
@@ -117,6 +120,32 @@ fn visuals() -> Visuals {
     }
     widgets.hovered.bg_stroke = Stroke::new(1.0, HOVERED.lerp_to_gamma(TEXT, 0.25));
     visuals
+}
+
+/// Returns the side padding of a button whose label is `label_width` points
+/// wide: the usual padding, or more to make the button [`BUTTON_WIDTH`] wide.
+pub fn button_padding(ui: &egui::Ui, label_width: f32) -> f32 {
+    let padding = ui.spacing().button_padding.x;
+    padding.max((BUTTON_WIDTH - label_width) / 2.0)
+}
+
+/// Draws a secondary button saying `text`, as high as any other and at
+/// least [`BUTTON_WIDTH`] wide, and returns its response.
+pub fn button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let font_id = TextStyle::Button.resolve(ui.style());
+    let label_width = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font_id, TEXT)
+        .size()
+        .x;
+    let padding = button_padding(ui, label_width);
+    ui.scope(|ui| {
+        // Extra padding rather than a minimum size keeps the label centred:
+        // a wider button aligns its label by the layout it sits in.
+        ui.spacing_mut().button_padding.x = padding;
+        ui.button(text)
+    })
+    .inner
 }
 
 /// Returns the frame of a card, with no inner margin of its own.

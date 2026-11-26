@@ -4,7 +4,8 @@ use crate::flow::session::{PlayerRow, SESSION_LOG_LINES, SessionView};
 use crate::flow::step::Click;
 use crate::ui::theme::{self, GREEN, GREY, ORANGE, RED, STRONG, TEXT, WEAK};
 use eframe::egui::{
-    self, Align, Align2, Color32, Label, Layout, Margin, RichText, Sense, TextStyle, Vec2, vec2,
+    self, Align, Align2, Color32, CursorIcon, Label, Layout, Margin, RichText, Sense, TextStyle,
+    Vec2, vec2,
 };
 
 /// Width of a guest's name field, in points.
@@ -61,7 +62,7 @@ pub fn show(ui: &mut egui::Ui, view: &SessionView) -> Option<Click> {
     let (_, open_logs) = egui::Sides::new().show(
         ui,
         |ui| theme::section_label(ui, "Server log"),
-        |ui| ui.small_button("Open logs folder").clicked(),
+        |ui| theme::button(ui, "Open logs folder").clicked(),
     );
     if open_logs {
         click = Some(Click::OpenLogs);
@@ -137,9 +138,10 @@ fn dot(ui: &mut egui::Ui, colour: Color32) {
 
 /// Draws a player and returns the click its field or a button gave.
 ///
-/// A guest's name field keeps what is typed in egui's memory and gives
-/// [`Click::Rename`] when it loses focus with a changed name. A refused
-/// address has no name field.
+/// A guest's name is text with Rename beside it; Rename or a click on the
+/// name opens a field in its place. The field keeps what is typed in egui's
+/// memory while it is open, and closing it gives [`Click::Rename`] when the
+/// name changed, unless Escape closed it. A refused address has no name.
 fn player_row(ui: &mut egui::Ui, player: &PlayerRow) -> Option<Click> {
     let mut click = None;
     let size = vec2(ui.available_width(), PLAYER_HEIGHT);
@@ -151,6 +153,8 @@ fn player_row(ui: &mut egui::Ui, player: &PlayerRow) -> Option<Click> {
             ui.label(RichText::new("you").color(WEAK));
             return;
         }
+        let id = egui::Id::unique(("player name", player.address));
+        let mut draft = ui.data_mut(|data| data.get_temp::<String>(id));
         if player.refused {
             dot(ui, ORANGE);
             ui.label(
@@ -158,23 +162,24 @@ fn player_row(ui: &mut egui::Ui, player: &PlayerRow) -> Option<Click> {
             );
         } else {
             dot(ui, if player.connected { GREEN } else { GREY });
-            let id = egui::Id::unique(("player name", player.address));
-            let mut draft = ui
-                .data_mut(|data| data.get_temp::<String>(id))
-                .unwrap_or_else(|| player.name.clone());
-            let field = ui.add(
-                egui::TextEdit::singleline(&mut draft)
-                    .desired_width(NAME_WIDTH)
-                    .align(Align2::LEFT_CENTER)
-                    .margin(vec2(6.0, 4.0)),
-            );
-            if field.lost_focus() {
-                if draft != player.name {
-                    click = Some(Click::Rename(player.address, draft.trim().to_string()));
+            match &mut draft {
+                Some(draft) => {
+                    if let Some(rename) = name_field(ui, id, draft, player) {
+                        click = Some(rename);
+                    }
                 }
-                ui.data_mut(|data| data.remove::<String>(id));
-            } else if field.has_focus() {
-                ui.data_mut(|data| data.insert_temp(id, draft));
+                None => {
+                    let name = ui
+                        .add(
+                            Label::new(RichText::new(&player.name).color(STRONG))
+                                .selectable(false)
+                                .sense(Sense::click()),
+                        )
+                        .on_hover_cursor(CursorIcon::Text);
+                    if name.clicked() {
+                        ui.data_mut(|data| data.insert_temp(id, player.name.clone()));
+                    }
+                }
             }
             ui.label(RichText::new(player.address.to_string()).color(WEAK));
             if !player.connected {
@@ -183,17 +188,52 @@ fn player_row(ui: &mut egui::Ui, player: &PlayerRow) -> Option<Click> {
         }
         if let Some(offered) = &player.offered {
             ui.label(RichText::new(format!("calls itself {offered}")).color(WEAK));
-            if !player.refused && ui.small_button("Use this name").clicked() {
-                click = Some(Click::UseOffered(player.address));
-            }
         }
-        if player.refused {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Let in").clicked() {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if player.refused {
+                if theme::button(ui, "Let in").clicked() {
                     click = Some(Click::Allow(player.address));
                 }
-            });
-        }
+                return;
+            }
+            // While the field is open, Done takes the focus from it and so
+            // closes it.
+            let rename = if draft.is_some() { "Done" } else { "Rename" };
+            if theme::button(ui, rename).clicked() && draft.is_none() {
+                ui.data_mut(|data| data.insert_temp(id, player.name.clone()));
+            }
+            if player.offered.is_some() && theme::button(ui, "Use this name").clicked() {
+                click = Some(Click::UseOffered(player.address));
+            }
+        });
     });
     click
+}
+
+/// Draws the open name field of `player`, keeping `draft` under `id`, and
+/// returns the rename closing it gave.
+fn name_field(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    draft: &mut String,
+    player: &PlayerRow,
+) -> Option<Click> {
+    let field = ui.add(
+        egui::TextEdit::singleline(draft)
+            .desired_width(NAME_WIDTH)
+            .align(Align2::LEFT_CENTER)
+            .margin(vec2(6.0, 4.0)),
+    );
+    if field.lost_focus() {
+        ui.data_mut(|data| data.remove::<String>(id));
+        let escaped = ui.input(|input| input.key_pressed(egui::Key::Escape));
+        return (!escaped && *draft != player.name)
+            .then(|| Click::Rename(player.address, draft.trim().to_string()));
+    }
+    if !field.has_focus() {
+        // The field has just opened.
+        field.request_focus();
+    }
+    ui.data_mut(|data| data.insert_temp(id, draft.clone()));
+    None
 }
