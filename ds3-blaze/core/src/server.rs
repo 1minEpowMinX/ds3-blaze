@@ -1,11 +1,14 @@
 //! The three services `serve` runs (redirector, main Blaze server, QoS), bound
 //! together and stopped together.
 
+use crate::event::Event;
 use crate::players::{PlayerBook, Roster};
-use crate::{blaze, models, qos, redirector};
+use crate::snapshot::Snapshot;
+use crate::{blaze, event, models, qos, redirector};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, UdpSocket};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
@@ -90,16 +93,17 @@ impl Server {
             port: ports.blaze,
             secure: false,
         };
-        let players = Arc::new(PlayerBook::new(config.advertise, config.players));
         let blaze_config = Arc::new(blaze::Config {
             advertise: config.advertise,
             qos: models::QosHttp {
                 host: config.advertise,
                 port: ports.qos.http,
             },
-            players: players.clone(),
+            players: Arc::new(PlayerBook::new(config.advertise, config.players)),
             games: Default::default(),
+            connections: Default::default(),
         });
+        let state = blaze_config.clone();
         let stop = CancellationToken::new();
         let token = stop.clone();
         let advertise = config.advertise;
@@ -119,7 +123,7 @@ impl Server {
         });
         Ok(ServerHandle {
             ports,
-            players,
+            state,
             stop: stop.clone(),
             task,
             _stop_on_drop: stop.drop_guard(),
@@ -130,7 +134,8 @@ impl Server {
 /// Running server returned by [`Server::start`]; dropping it stops the server.
 pub struct ServerHandle {
     ports: Ports,
-    players: Arc<PlayerBook>,
+    /// Configuration and state the Blaze sessions share.
+    state: Arc<blaze::Config>,
     stop: CancellationToken,
     task: JoinHandle<std::io::Result<()>>,
     _stop_on_drop: DropGuard,
@@ -145,7 +150,21 @@ impl ServerHandle {
     /// Returns the player names and admission rules the server applies; changes
     /// made through it apply to the next connection.
     pub fn players(&self) -> &PlayerBook {
-        &self.players
+        &self.state.players
+    }
+
+    /// Returns the server's sessions, refused addresses, rooms and player book
+    /// as they are now.
+    pub fn snapshot(&self) -> Snapshot {
+        blaze::snapshot(&self.state)
+    }
+
+    /// Returns a receiver of the events sent from now on.
+    ///
+    /// The channel is the process's own (see [`crate::event`]), so it also
+    /// carries the log lines of other servers and tasks in the process.
+    pub fn events(&self) -> broadcast::Receiver<Event> {
+        event::subscribe()
     }
 
     /// Closes the listeners and ends every session task.
@@ -163,9 +182,34 @@ impl ServerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::authentication as auth;
+    use crate::fire::{FireCodec, Frame, FrameType};
+    use futures::{SinkExt, StreamExt};
     use std::time::Duration;
+    use tdf::prelude::{TdfSerialize, TdfSerializer};
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpStream;
+    use tokio_util::codec::Framed;
+
+    /// Empty request body.
+    struct Empty;
+
+    impl TdfSerialize for Empty {
+        fn serialize<S: TdfSerializer>(&self, _: &mut S) {}
+    }
+
+    /// Waits until `server`'s snapshot satisfies `done`, reading it again after
+    /// every event; fails after five seconds.
+    async fn wait_for(server: &ServerHandle, done: impl Fn(&Snapshot) -> bool) {
+        let mut events = server.events();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !done(&server.snapshot()) {
+                let _ = events.recv().await;
+            }
+        })
+        .await
+        .expect("the snapshot changes in time");
+    }
 
     fn config(ports: Ports) -> Config {
         Config {
@@ -241,5 +285,45 @@ mod tests {
             .await
             .expect("the connection closes");
         assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+    }
+
+    #[tokio::test]
+    async fn stop_closes_a_logged_in_players_connection() {
+        let server = Server::start(config(Ports::ANY)).await.unwrap();
+        let tcp = TcpStream::connect((Ipv4Addr::LOCALHOST, server.ports().blaze))
+            .await
+            .unwrap();
+        let mut client = Framed::new(tcp, FireCodec::default());
+        let login = Frame::request(1, auth::COMPONENT, auth::SILENT_LOGIN, Empty);
+        client.send(login).await.unwrap();
+        loop {
+            let frame = client.next().await.expect("reply").expect("frame");
+            if frame.header.ty == FrameType::Response {
+                break;
+            }
+        }
+        server.stop();
+        let next = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("the connection closes");
+        assert!(
+            matches!(next, None | Some(Err(_))),
+            "a frame arrived after the stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_follows_a_connection() {
+        let server = Server::start(config(Ports::ANY)).await.unwrap();
+        let client = TcpStream::connect((Ipv4Addr::LOCALHOST, server.ports().blaze))
+            .await
+            .unwrap();
+        wait_for(&server, |s| {
+            s.sessions.len() == 1 && s.sessions[0].address == Ipv4Addr::LOCALHOST
+        })
+        .await;
+        assert_eq!(server.snapshot().sessions[0].name, "Host");
+        drop(client);
+        wait_for(&server, |s| s.sessions.is_empty()).await;
     }
 }

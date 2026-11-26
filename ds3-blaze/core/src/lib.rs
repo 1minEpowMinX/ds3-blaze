@@ -13,3 +13,4 @@ pub mod players;
 pub mod qos;
 pub mod redirector;
 pub mod server;
+pub mod snapshot;
