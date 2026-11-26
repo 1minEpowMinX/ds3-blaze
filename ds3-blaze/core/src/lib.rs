@@ -1,0 +1,12 @@
+//! Server side of ds3-blaze: the redirector, the main Blaze server and the QoS
+//! service that `serve` runs, with the frame codec and message models they
+//! share.
+
+pub mod blaze;
+pub mod components;
+pub mod fire;
+pub mod game;
+pub mod log;
+pub mod models;
+pub mod qos;
+pub mod redirector;
