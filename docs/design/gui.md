@@ -202,9 +202,9 @@ Each stage is a branch of its own, merged into `main` when CI passes. A stage th
 3. Events, snapshot and `PlayerBook`; the core stops printing and the CLI prints the events.
 4. `clap`, the `hosts` module and `hosts` command, `scripts/hosts.ps1` removed.
 5. Diagnostics: findings and fixes, the route part tied to the chosen address, the `fix` command, `p2p` events, `reach`.
-6. The GUI, and the renaming of the executables.
+6. The GUI, the guest's nickname sent to the host, and the renaming of the executables.
 7. README, Nexus page, network-checks and the docs index rewritten for the GUI.
 
-## Future work
+## Guest nickname
 
-- The guest tells the host its own nickname, so the host no longer has to type it. The way the guest sends it (for example a request to the host's QoS HTTP server) and how the host confirms it are still to be thought through. The same channel would let the guest's window show the name the host sees, which `reach` cannot learn without a full login.
+The guest tells the host its own nickname, so the host no longer has to type it. The way the guest sends it (for example a request to the host's QoS HTTP server) and how the host confirms it are still to be thought through; they are settled at the start of stage 6, which builds them with the GUI. The same channel would let the guest's window show the name the host sees, which `reach` cannot learn without a full login.
