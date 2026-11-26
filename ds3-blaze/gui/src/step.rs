@@ -20,7 +20,7 @@ impl Status {
     /// Returns the word of the status pill when the step names none.
     pub fn label(self) -> &'static str {
         match self {
-            Status::Waiting => "waiting",
+            Status::Waiting => "",
             Status::Running => "running",
             Status::Ok => "ok",
             Status::Warning => "needs fix",

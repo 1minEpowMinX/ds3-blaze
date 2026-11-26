@@ -8,7 +8,7 @@ use crate::row;
 use crate::run;
 use crate::settings::{self, Mode, Settings};
 use crate::start::{self, Form, StartClick};
-use crate::step::{Click, Footer, Step};
+use crate::step::{Click, Footer, Status, Step};
 use ds3_blaze_core::event::Event;
 use ds3_blaze_core::hosts;
 use ds3_blaze_core::log;
@@ -500,6 +500,10 @@ impl App {
         else {
             return;
         };
+        if host.trim().is_empty() {
+            *refused = Some("type the host's VPN address".into());
+            return;
+        }
         let address = match host.trim().parse::<Ipv4Addr>() {
             Ok(address) if address != *own && !address.is_unspecified() => address,
             Ok(_) => {
@@ -521,9 +525,25 @@ impl App {
 
     /// Draws `steps` after the first as numbered rows and returns the click
     /// one of them gave.
+    ///
+    /// Once the first step has started, the first step still waiting is
+    /// marked as the next one.
     fn rows(ui: &mut egui::Ui, steps: &[Step], open: &mut [bool]) -> Option<Click> {
         let mut click = None;
+        let next = (steps[0].status != Status::Waiting)
+            .then(|| steps.iter().position(|step| step.status == Status::Waiting))
+            .flatten();
         for (index, step) in steps.iter().enumerate().skip(1) {
+            let marked;
+            let step = if next == Some(index) && step.pill.is_none() {
+                marked = Step {
+                    pill: Some("next"),
+                    ..step.clone()
+                };
+                &marked
+            } else {
+                step
+            };
             if let Some(row_click) = row::show(ui, index, step, &mut open[index]) {
                 click = Some(row_click);
             }

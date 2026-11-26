@@ -375,8 +375,10 @@ impl GuestFlow {
 
     fn draw_link(&mut self, now: Instant) {
         let mut step = self.link.step(TITLES[LINK], now, SILENT_HINT);
-        step.note = Some(LINK_NOTE.into());
         checks::add_findings(&mut step, &self.findings);
+        if self.link.running() || !step.details.is_empty() {
+            step.note = Some(LINK_NOTE.into());
+        }
         if let Some(error) = &self.fix_error {
             step.details
                 .push(Detail::Text(format!("the fix failed: {error}")));
@@ -411,7 +413,6 @@ impl GuestFlow {
             step.pill = Some("at risk");
             step.summary = "the direct link failed, so co-op may not connect".into();
         } else {
-            step.pill = Some("next");
             step.summary = "online co-op".into();
         }
     }

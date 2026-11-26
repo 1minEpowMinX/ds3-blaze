@@ -557,12 +557,12 @@ impl HostFlow {
         if self.guest.is_none() {
             step.summary = "starts when the guest connects".into();
         }
-        if self.guest.is_some() || !self.local.is_empty() {
-            step.note = Some(LINK_NOTE.into());
-        }
         let mut findings = self.local.clone();
         findings.extend(self.route.iter().cloned());
         checks::add_findings(&mut step, &findings);
+        if self.guest.is_some() || !step.details.is_empty() {
+            step.note = Some(LINK_NOTE.into());
+        }
         if let Some(guest) = self.guest {
             step.details
                 .insert(0, Detail::Text(format!("the guest at {guest}")));
