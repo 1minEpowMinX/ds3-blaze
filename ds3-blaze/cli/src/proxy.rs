@@ -7,11 +7,11 @@
 //! port in plain TCP. Each connection to that port is relayed byte for byte to
 //! the upstream instance.
 
-use crate::fire::{FireCodec, Frame};
-use crate::log;
-use crate::redirector::{self, COMPONENT, GET_SERVER_INSTANCE, Instance};
 use blaze_ssl_async::{BlazeServerContext, BlazeStream};
 use bytes::BytesMut;
+use ds3_blaze_core::fire::{FireCodec, Frame};
+use ds3_blaze_core::log;
+use ds3_blaze_core::redirector::{self, COMPONENT, GET_SERVER_INSTANCE, Instance};
 use futures::{SinkExt, TryStreamExt};
 use std::io::{Error, ErrorKind};
 use std::net::{Ipv4Addr, SocketAddr};

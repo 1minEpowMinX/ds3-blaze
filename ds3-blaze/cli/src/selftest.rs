@@ -1,12 +1,12 @@
 //! Client that runs a running `serve` instance through the game's login sequence.
 
-use crate::components::{
+use blaze_ssl_async::BlazeStream;
+use ds3_blaze_core::components::{
     association_lists as assoc, authentication as auth, game_manager as gm, user_sessions as us,
     util,
 };
-use crate::fire::{FireCodec, Frame, FrameType, hex};
-use crate::redirector::{self, COMPONENT, GET_SERVER_INSTANCE};
-use blaze_ssl_async::BlazeStream;
+use ds3_blaze_core::fire::{FireCodec, Frame, FrameType, hex};
+use ds3_blaze_core::redirector::{self, COMPONENT, GET_SERVER_INSTANCE};
 use futures::{SinkExt, TryStreamExt};
 use std::io::{Error, ErrorKind};
 use std::net::{Ipv4Addr, SocketAddr};

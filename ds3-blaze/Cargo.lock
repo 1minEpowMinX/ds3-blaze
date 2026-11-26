@@ -178,6 +178,19 @@ version = "0.1.0"
 dependencies = [
  "blaze-ssl-async",
  "bytes",
+ "ds3-blaze-core",
+ "futures",
+ "tdf",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "ds3-blaze-core"
+version = "0.1.0"
+dependencies = [
+ "blaze-ssl-async",
+ "bytes",
  "chrono",
  "futures",
  "tdf",
