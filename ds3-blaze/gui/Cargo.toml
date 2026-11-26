@@ -1,0 +1,19 @@
+[package]
+name = "ds3-blaze-gui"
+description = "Window of ds3-blaze: hosting or joining a Dead Space 3 co-op game step by step"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ds3-blaze-gui"
+path = "src/main.rs"
+
+[dependencies]
+ds3-blaze-core = { path = "../core" }
+ds3-blaze-diag = { path = "../diag" }
+eframe.workspace = true
+serde.workspace = true
+toml.workspace = true
+tokio.workspace = true

@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "diag", "cli"]
+members = ["core", "diag", "cli", "gui"]
 resolver = "3"
 
 [workspace.package]
@@ -19,6 +19,9 @@ futures = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 windows-sys = "0.61"
+eframe = "0.37"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
 
 [profile.release]
 # Symbols are stripped from the exe; the MSVC linker still writes a .pdb beside
