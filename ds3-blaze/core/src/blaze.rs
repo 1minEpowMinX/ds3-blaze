@@ -12,6 +12,7 @@ use crate::fire::{FireCodec, Frame, FrameType};
 use crate::game::{self, Games, Outbox};
 use crate::log;
 use crate::models::{self, NetData, Player, QosHttp};
+use crate::players::PlayerBook;
 use futures::{SinkExt, StreamExt};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -30,41 +31,12 @@ pub struct Config {
     /// Address the client is told to reach this machine at (telemetry, ticker, QoS).
     pub advertise: Ipv4Addr,
     pub qos: QosHttp,
-    /// Display name of a player connecting from this machine or from `advertise`.
-    pub player_name: String,
-    /// Display names of players connecting from other addresses.
-    pub player_names: Vec<(Ipv4Addr, String)>,
-    /// Whether connections are accepted only from addresses [`Config::admits`] lists.
-    pub only_listed: bool,
+    /// Names and admission rules, read at each connection and login.
+    pub players: Arc<PlayerBook>,
     pub games: Mutex<Games>,
 }
 
 impl Config {
-    /// Returns whether a connection from `ip` may open a session: always without
-    /// `only_listed`, otherwise only from this machine, `advertise` or an address
-    /// in `player_names`.
-    fn admits(&self, ip: Ipv4Addr) -> bool {
-        !self.only_listed
-            || ip.is_loopback()
-            || ip == self.advertise
-            || self.player_names.iter().any(|(addr, _)| *addr == ip)
-    }
-
-    /// Returns the display name of a player connecting from `ip`.
-    ///
-    /// Addresses listed in `player_names` get their entry; this machine and
-    /// `advertise` get `player_name`; any other address gets `Player-` followed by
-    /// its last octet.
-    fn name_for(&self, ip: Ipv4Addr) -> String {
-        if let Some((_, name)) = self.player_names.iter().find(|(addr, _)| *addr == ip) {
-            return name.clone();
-        }
-        if ip.is_loopback() || ip == self.advertise {
-            return self.player_name.clone();
-        }
-        format!("Player-{}", ip.octets()[3])
-    }
-
     /// Returns the address other players reach a client connected from `ip` at:
     /// `advertise` for this machine, `ip` otherwise.
     fn reachable_ip(&self, ip: Ipv4Addr) -> Ipv4Addr {
@@ -85,7 +57,7 @@ pub async fn serve(
         "listening on {} (plain TCP)",
         listener.local_addr()?
     );
-    if config.only_listed {
+    if config.players.roster().only_allowed {
         log!(
             "blaze",
             "accepting only this machine, {} and the --player addresses",
@@ -95,7 +67,7 @@ pub async fn serve(
     let next_id = Arc::new(AtomicU32::new(1));
     loop {
         let (tcp, peer) = listener.accept().await?;
-        if !config.admits(peer_ipv4(peer)) {
+        if !config.players.admits(peer_ipv4(peer)) {
             log!("blaze", "{peer}: refused, address not listed");
             continue;
         }
@@ -348,7 +320,7 @@ impl Session {
                 self.log_out();
                 let player = self
                     .games()
-                    .unique_player(&self.config.name_for(self.peer_ip), self.locale);
+                    .unique_player(&self.config.players.name_for(self.peer_ip), self.locale);
                 log!(
                     &self.tag,
                     "login accepted without verification: \"{}\" id={}",
@@ -991,32 +963,23 @@ fn read<T>(
 mod tests {
     use super::*;
 
-    fn config(only_listed: bool) -> Config {
+    fn config() -> Config {
+        let advertise = Ipv4Addr::new(26, 0, 0, 1);
         Config {
-            advertise: Ipv4Addr::new(26, 0, 0, 1),
+            advertise,
             qos: QosHttp {
                 host: Ipv4Addr::LOCALHOST,
                 port: 0,
             },
-            player_name: "host".into(),
-            player_names: vec![(Ipv4Addr::new(26, 0, 0, 2), "guest".into())],
-            only_listed,
+            players: Arc::new(PlayerBook::new(
+                advertise,
+                crate::players::Roster {
+                    own_name: "host".into(),
+                    ..Default::default()
+                },
+            )),
             games: Default::default(),
         }
-    }
-
-    #[test]
-    fn only_listed_admits_this_machine_and_listed_players() {
-        let config = config(true);
-        assert!(config.admits(Ipv4Addr::LOCALHOST));
-        assert!(config.admits(Ipv4Addr::new(26, 0, 0, 1)));
-        assert!(config.admits(Ipv4Addr::new(26, 0, 0, 2)));
-        assert!(!config.admits(Ipv4Addr::new(26, 0, 0, 3)));
-    }
-
-    #[test]
-    fn without_only_listed_every_address_is_admitted() {
-        assert!(config(false).admits(Ipv4Addr::new(26, 0, 0, 3)));
     }
 
     /// `suspendUserPing` body.
@@ -1038,7 +1001,7 @@ mod tests {
         fn connect() -> Client {
             let (client, server) = tokio::io::duplex(64 * 1024);
             let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 1));
-            tokio::spawn(serve_session(server, peer, 1, Arc::new(config(false))));
+            tokio::spawn(serve_session(server, peer, 1, Arc::new(config())));
             Client {
                 framed: Framed::new(client, FireCodec::default()),
                 seq: 0,

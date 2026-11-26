@@ -1,6 +1,7 @@
 //! The three services `serve` runs (redirector, main Blaze server, QoS), bound
 //! together and stopped together.
 
+use crate::players::{PlayerBook, Roster};
 use crate::{blaze, models, qos, redirector};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -56,13 +57,8 @@ pub struct Config {
     /// Address handed to clients as this machine's (redirect, telemetry, QoS).
     pub advertise: Ipv4Addr,
     pub ports: Ports,
-    /// Display name of a player connecting from this machine or from `advertise`.
-    pub player_name: String,
-    /// Display names of players connecting from other addresses.
-    pub player_names: Vec<(Ipv4Addr, String)>,
-    /// Whether Blaze accepts connections only from this machine, `advertise`
-    /// and the addresses in `player_names`.
-    pub only_listed: bool,
+    /// Player names and admission rules the server starts with.
+    pub players: Roster,
 }
 
 /// Entry point that starts the three services.
@@ -94,15 +90,14 @@ impl Server {
             port: ports.blaze,
             secure: false,
         };
+        let players = Arc::new(PlayerBook::new(config.advertise, config.players));
         let blaze_config = Arc::new(blaze::Config {
             advertise: config.advertise,
             qos: models::QosHttp {
                 host: config.advertise,
                 port: ports.qos.http,
             },
-            player_name: config.player_name,
-            player_names: config.player_names,
-            only_listed: config.only_listed,
+            players: players.clone(),
             games: Default::default(),
         });
         let stop = CancellationToken::new();
@@ -124,6 +119,7 @@ impl Server {
         });
         Ok(ServerHandle {
             ports,
+            players,
             stop: stop.clone(),
             task,
             _stop_on_drop: stop.drop_guard(),
@@ -134,6 +130,7 @@ impl Server {
 /// Running server returned by [`Server::start`]; dropping it stops the server.
 pub struct ServerHandle {
     ports: Ports,
+    players: Arc<PlayerBook>,
     stop: CancellationToken,
     task: JoinHandle<std::io::Result<()>>,
     _stop_on_drop: DropGuard,
@@ -143,6 +140,12 @@ impl ServerHandle {
     /// Returns the ports the listeners are bound to.
     pub fn ports(&self) -> Ports {
         self.ports
+    }
+
+    /// Returns the player names and admission rules the server applies; changes
+    /// made through it apply to the next connection.
+    pub fn players(&self) -> &PlayerBook {
+        &self.players
     }
 
     /// Closes the listeners and ends every session task.
@@ -169,9 +172,10 @@ mod tests {
             bind: Ipv4Addr::LOCALHOST,
             advertise: Ipv4Addr::LOCALHOST,
             ports,
-            player_name: "Host".into(),
-            player_names: Vec::new(),
-            only_listed: false,
+            players: Roster {
+                own_name: "Host".into(),
+                ..Default::default()
+            },
         }
     }
 

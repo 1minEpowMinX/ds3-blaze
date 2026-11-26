@@ -10,6 +10,7 @@ mod proxy;
 
 use ds3_blaze_core::event::{self, Event};
 use ds3_blaze_core::log;
+use ds3_blaze_core::players::Roster;
 use ds3_blaze_core::server::{self, DEFAULT_BLAZE_PORT, REDIRECTOR_PORT, Server};
 use ds3_blaze_diag::{netcheck, p2pcheck};
 
@@ -165,9 +166,12 @@ async fn serve(args: ServeArgs) -> std::io::Result<()> {
             blaze: args.blaze_port,
             ..Default::default()
         },
-        player_name: args.name,
-        player_names: args.players,
-        only_listed: args.only_listed,
+        players: Roster {
+            own_name: args.name,
+            allowed: args.players.iter().map(|(ip, _)| *ip).collect(),
+            names: args.players.into_iter().collect(),
+            only_allowed: args.only_listed,
+        },
     };
     Server::start(config).await?.finished().await
 }
