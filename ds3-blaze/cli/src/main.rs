@@ -16,6 +16,7 @@ use ds3_blaze_core::server::{self, DEFAULT_BLAZE_PORT, Server};
 use ds3_blaze_diag::fix;
 use ds3_blaze_diag::netcheck::{self, Finding, Fix, Own, Setup, Severity};
 use ds3_blaze_diag::p2p::{self, Progress, Timing};
+use ds3_blaze_diag::reach;
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -63,6 +64,16 @@ enum Command {
     /// console run as administrator.
     #[command(subcommand)]
     Fix(FixCommand),
+    /// Checks every connection the game makes to the host's server before it
+    /// joins: the hosts entry, the redirector, the Blaze server and QoS.
+    Reach {
+        /// The host's VPN address; on the host's own PC, its own VPN address.
+        #[arg(long, value_name = "IP")]
+        host: Ipv4Addr,
+        /// The address the hosts entry should give; the default is --host.
+        #[arg(long, value_name = "IP")]
+        expect: Option<Ipv4Addr>,
+    },
     /// Relays the game to EA's Blaze servers and logs every message.
     #[cfg(feature = "research")]
     Proxy(EaArgs),
@@ -411,27 +422,65 @@ fn run_fix(command: FixCommand) -> io::Result<()> {
     Ok(())
 }
 
+/// Checks the server at `host` with the hosts entry expected to give
+/// `expected`, printing one line per stage; fails when a stage fails.
+async fn reach_command(host: Ipv4Addr, expected: Ipv4Addr) -> io::Result<()> {
+    println!("checking the way to the server at {host}:");
+    let reports = reach::run(expected, host, server::Ports::default()).await;
+    let mut failed = 0;
+    for report in &reports {
+        match &report.result {
+            Ok(text) => println!("  [ok] {}: {text}", report.stage),
+            Err(text) => {
+                failed += 1;
+                println!("  [problem] {}: {text}", report.stage);
+                if report.stage == reach::Stage::Resolve {
+                    println!(
+                        "          fix: {} hosts enable --address {expected}",
+                        shell_exe(&invoked_exe())
+                    );
+                }
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(io::Error::other(format!(
+            "{failed} of {} stages failed",
+            reports.len()
+        )));
+    }
+    println!("the game reaches the server at {host}");
+    Ok(())
+}
+
+/// Returns the path this executable was started by, as the console typed it.
+fn invoked_exe() -> String {
+    std::env::args()
+        .next()
+        .unwrap_or_else(|| env!("CARGO_BIN_NAME").into())
+}
+
+/// Returns `invoked` in the form PowerShell runs it in.
+fn shell_exe(invoked: &str) -> String {
+    // PowerShell runs a quoted path only through the call operator.
+    if invoked.contains(' ') {
+        format!("& \"{invoked}\"")
+    } else {
+        invoked.to_string()
+    }
+}
+
 /// Returns the command line that carries out `fix`.
 fn fix_command(fix: &Fix) -> String {
-    let invoked = std::env::args().next();
     let exe = std::env::current_exe().ok();
-    fix_command_from(
-        fix,
-        invoked.as_deref().unwrap_or(env!("CARGO_BIN_NAME")),
-        exe.as_deref(),
-    )
+    fix_command_from(fix, &invoked_exe(), exe.as_deref())
 }
 
 /// Returns the command line that carries out `fix` with the executable
 /// started as `invoked`; the server rule names its program only when it is
 /// not `current_exe`, which `fix server-rule` takes by default.
 fn fix_command_from(fix: &Fix, invoked: &str, current_exe: Option<&std::path::Path>) -> String {
-    // PowerShell runs a quoted path only through the call operator.
-    let exe = if invoked.contains(' ') {
-        format!("& \"{invoked}\"")
-    } else {
-        invoked.to_string()
-    };
+    let exe = shell_exe(invoked);
     match fix {
         Fix::GameRule => format!("{exe} fix game-rule"),
         Fix::ServerRule(program) if Some(program.as_path()) == current_exe => {
@@ -509,6 +558,7 @@ async fn main() -> ExitCode {
         Command::Fix(command) => run_fix(command),
         Command::NetCheck { peer, address } => net_check_command(peer, address),
         Command::P2pCheck(args) => p2p_check(args).await,
+        Command::Reach { host, expect } => reach_command(host, expect.unwrap_or(host)).await,
         #[cfg(feature = "research")]
         Command::Proxy(args) => printing_log(run_proxy(args.ea_redirector)).await,
         #[cfg(feature = "research")]
