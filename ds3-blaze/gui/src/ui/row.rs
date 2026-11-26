@@ -5,6 +5,7 @@ use crate::flow::checks::sentence;
 use crate::flow::step::{Button, Click, Detail, Status, Step};
 use crate::ui::theme::{self, ACCENT, GREEN, GREY, ON_ACCENT, ORANGE, RED, STRONG, TEXT, WEAK};
 use ds3_blaze_diag::netcheck::{Finding, Severity};
+use eframe::egui::emath::GuiRounding;
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     self, Align, Align2, Color32, CursorIcon, FontId, Label, Layout, Margin, Pos2, RichText, Sense,
@@ -260,10 +261,13 @@ fn draw(ui: &mut egui::Ui, button: &Button, height: f32, main: bool) -> bool {
         let left = response.rect.left() + padding;
         let width = if main { disc(ink) } else { ink.width() };
         let centre = pos2(left + width / 2.0, response.rect.center().y);
+        // Text is drawn snapped to whole pixels, so the disc is centred on
+        // where the glyph lands rather than where it was asked to go.
+        let pos = (centre - ink.center().to_vec2()).round_to_pixels(ui.pixels_per_point());
         if main {
-            painter.circle_filled(centre, width / 2.0, ON_ACCENT);
+            painter.circle_filled(pos + ink.center().to_vec2(), width / 2.0, ON_ACCENT);
         }
-        painter.galley(centre - ink.center().to_vec2(), shield, GREY);
+        painter.galley(pos, shield, GREY);
     }
     let response = match button.disabled {
         Some(reason) => response.on_disabled_hover_text(reason),
