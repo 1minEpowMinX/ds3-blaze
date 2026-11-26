@@ -4,6 +4,12 @@
 use ds3_blaze_diag::netcheck::{Finding, Fix};
 use std::net::Ipv4Addr;
 
+/// Why a button is disabled while a step runs or a prompt is awaited.
+pub const BUSY: &str = "Wait until the current step ends";
+
+/// Why the button that ends a mode's changes is disabled before any change.
+pub const NOTHING_TO_UNDO: &str = "Nothing to undo yet";
+
 /// Where a step stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -14,19 +20,6 @@ pub enum Status {
     Failed,
 }
 
-impl Status {
-    /// Returns the word of the status pill when the step names none.
-    pub fn label(self) -> &'static str {
-        match self {
-            Status::Waiting => "",
-            Status::Running => "running",
-            Status::Ok => "ok",
-            Status::Warning => "needs fix",
-            Status::Failed => "failed",
-        }
-    }
-}
-
 /// One line of a step's details.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Detail {
@@ -35,12 +28,57 @@ pub enum Detail {
     Finding(Finding),
 }
 
-/// A button on a step's line.
+/// A button the window draws.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Button {
     pub label: &'static str,
     pub click: Click,
-    pub enabled: bool,
+    /// Whether pressing it brings up the administrator prompt.
+    pub elevates: bool,
+    /// Why the button is disabled, `None` while it is enabled.
+    pub disabled: Option<&'static str>,
+}
+
+impl Button {
+    /// Returns an enabled button that runs nothing elevated.
+    pub fn new(label: &'static str, click: Click) -> Button {
+        Button {
+            label,
+            click,
+            elevates: false,
+            disabled: None,
+        }
+    }
+
+    /// Returns an enabled button that brings up the administrator prompt.
+    pub fn elevated(label: &'static str, click: Click) -> Button {
+        Button {
+            elevates: true,
+            ..Button::new(label, click)
+        }
+    }
+
+    /// Returns the button that applies `fix`.
+    pub fn fix(fix: &Fix) -> Button {
+        let label = match fix {
+            Fix::GameRule | Fix::ServerRule(_) => "Add rule",
+            Fix::PrivateProfile(_) => "Make private",
+        };
+        Button::elevated(label, Click::Fix(fix.clone()))
+    }
+
+    /// Returns the button disabled for `reason` when one is given.
+    pub fn disabled_by(self, reason: Option<&'static str>) -> Button {
+        Button {
+            disabled: reason,
+            ..self
+        }
+    }
+
+    /// Returns whether the button can be pressed.
+    pub fn enabled(&self) -> bool {
+        self.disabled.is_none()
+    }
 }
 
 /// Every action a row's buttons and fields can ask for.
@@ -65,12 +103,10 @@ pub enum Click {
 /// A step of a mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
-    pub title: String,
-    /// The line a collapsed row shows.
+    /// The sentence the row shows: what the step will do while it waits,
+    /// what is now true once it is done.
     pub summary: String,
     pub status: Status,
-    /// The word of the status pill, in place of the status's own.
-    pub pill: Option<&'static str>,
     pub details: Vec<Detail>,
     /// The line beside the buttons under the details.
     pub note: Option<String>,
@@ -78,23 +114,15 @@ pub struct Step {
 }
 
 impl Step {
-    /// Returns a waiting step titled `title`, with no summary, details or
-    /// buttons.
-    pub fn new(title: &str) -> Step {
+    /// Returns a waiting step saying `summary`, with no details or buttons.
+    pub fn new(summary: &str) -> Step {
         Step {
-            title: title.to_string(),
-            summary: String::new(),
+            summary: summary.to_string(),
             status: Status::Waiting,
-            pill: None,
             details: Vec::new(),
             note: None,
             buttons: Vec::new(),
         }
-    }
-
-    /// Returns the word the status pill shows.
-    pub fn pill(&self) -> &'static str {
-        self.pill.unwrap_or(self.status.label())
     }
 }
 

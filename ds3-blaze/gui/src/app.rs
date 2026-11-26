@@ -9,7 +9,7 @@ use crate::run;
 use crate::session;
 use crate::settings::{self, Mode, Settings};
 use crate::start::{self, Form, StartClick};
-use crate::step::{Click, Footer, Status, Step};
+use crate::step::{Click, Footer, Step};
 use ds3_blaze_core::event::Event;
 use ds3_blaze_core::hosts;
 use ds3_blaze_core::log;
@@ -526,25 +526,9 @@ impl App {
 
     /// Draws `steps` after the first as numbered rows and returns the click
     /// one of them gave.
-    ///
-    /// Once the first step has started, the first step still waiting is
-    /// marked as the next one.
     fn rows(ui: &mut egui::Ui, steps: &[Step], open: &mut [bool]) -> Option<Click> {
         let mut click = None;
-        let next = (steps[0].status != Status::Waiting)
-            .then(|| steps.iter().position(|step| step.status == Status::Waiting))
-            .flatten();
         for (index, step) in steps.iter().enumerate().skip(1) {
-            let marked;
-            let step = if next == Some(index) && step.pill.is_none() {
-                marked = Step {
-                    pill: Some("next"),
-                    ..step.clone()
-                };
-                &marked
-            } else {
-                step
-            };
             if let Some(row_click) = row::show(ui, index, step, &mut open[index]) {
                 click = Some(row_click);
             }
@@ -700,8 +684,7 @@ fn footer(ui: &mut egui::Ui, footer: &Footer, errors: [&Option<String>; 2]) -> O
                     ui.label(RichText::new(&footer.text).weak());
                 },
                 |ui| {
-                    let button = egui::Button::new(footer.button.label).min_size(vec2(0.0, 32.0));
-                    if ui.add_enabled(footer.button.enabled, button).clicked() {
+                    if row::action(ui, &footer.button, 32.0) {
                         click = Some(footer.button.click.clone());
                     }
                 },

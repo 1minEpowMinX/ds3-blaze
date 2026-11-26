@@ -4,7 +4,7 @@
 use crate::checks;
 use crate::link::Link;
 use crate::network::Network;
-use crate::step::{self, Button, Click, Detail, Footer, Status, Step};
+use crate::step::{self, BUSY, Button, Click, Detail, Footer, NOTHING_TO_UNDO, Status, Step};
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_diag::netcheck::{Finding, Fix, Severity};
 use ds3_blaze_diag::p2p::{Outcome, Progress};
@@ -13,20 +13,32 @@ use std::io;
 use std::net::Ipv4Addr;
 use std::time::Instant;
 
-const ADDRESS: usize = 0;
+const NETWORK: usize = 0;
 const HOSTS: usize = 1;
 const REACH: usize = 2;
 const LINK: usize = 3;
 const GAME: usize = 4;
 
-/// Titles of the steps, in the order they run.
-const TITLES: [&str; 5] = [
-    "Host's VPN address",
-    "Point game at host",
-    "Reach host's server",
-    "Direct link to host",
-    "Start Dead Space 3",
+/// What each step says while it waits, in the order the steps run.
+const WAITING: [&str; 5] = [
+    "Check this PC's network",
+    "Point the game at the host's PC",
+    "Ask the host's server",
+    "Check the direct link to the host",
+    "Start Dead Space 3 and choose online co-op",
 ];
+
+/// What each step says once it is done.
+const DONE: [&str; 5] = [
+    "This PC's network is ready",
+    "The game goes to the host's PC",
+    "The host's server answers",
+    "The direct link works",
+    "Start Dead Space 3 and choose online co-op",
+];
+
+/// What a step says while the administrator prompt is awaited.
+pub const PROMPT: &str = "Waiting for Windows to ask for permission";
 
 /// What the open link step says beside "Check again".
 const LINK_NOTE: &str = "The host's window runs the same check at the same time";
@@ -128,7 +140,7 @@ impl GuestFlow {
 
     /// Sets every step back to waiting.
     fn reset(&mut self, now: Instant) {
-        self.steps = TITLES.iter().map(|title| Step::new(title)).collect();
+        self.steps = WAITING.iter().map(|waiting| Step::new(waiting)).collect();
         self.link = Link::default();
         self.findings.clear();
         self.fix_error = None;
@@ -142,16 +154,19 @@ impl GuestFlow {
     /// the guest, and the button that restores the EA servers.
     pub fn footer(&self) -> Footer {
         let text = match &self.nickname {
-            Some(Ok(text)) => capitalised(text),
+            Some(Ok(text)) if !text.is_empty() => checks::sentence(text),
             _ => format!("You join as {}", self.name),
         };
         Footer {
             text,
-            button: Button {
-                label: "Disconnect and restore hosts",
-                click: Click::RestoreHosts,
-                enabled: !self.busy() && self.steps[HOSTS].status != Status::Waiting,
-            },
+            button: Button::elevated("Disconnect and restore hosts", Click::RestoreHosts)
+                .disabled_by(if self.busy() {
+                    Some(BUSY)
+                } else if self.steps[HOSTS].status == Status::Waiting {
+                    Some(NOTHING_TO_UNDO)
+                } else {
+                    None
+                }),
         }
     }
 
@@ -211,7 +226,7 @@ impl GuestFlow {
             Click::RestoreHosts => {
                 self.elevation = Some(Elevation::Restore);
                 self.steps[HOSTS].status = Status::Running;
-                self.steps[HOSTS].summary = "waiting for the administrator prompt".into();
+                self.steps[HOSTS].summary = PROMPT.into();
                 vec![GuestAction::RestoreHosts]
             }
             _ => Vec::new(),
@@ -228,9 +243,9 @@ impl GuestFlow {
     }
 
     fn check_network(&mut self) -> Vec<GuestAction> {
-        let step = &mut self.steps[ADDRESS];
+        let step = &mut self.steps[NETWORK];
         step.status = Status::Running;
-        step.summary = "reading this PC's network settings, a few seconds".into();
+        step.summary = "Checking this PC's network".into();
         vec![GuestAction::CheckNetwork {
             own: self.own,
             peer: self.host,
@@ -238,12 +253,12 @@ impl GuestFlow {
     }
 
     fn network(&mut self, network: io::Result<Network>, now: Instant) -> Vec<GuestAction> {
-        let step = &mut self.steps[ADDRESS];
+        let step = &mut self.steps[NETWORK];
         match network {
             Err(err) => {
                 // The later steps show the route's effect even unchecked.
                 step.status = Status::Warning;
-                step.summary = format!("the network check failed to run: {err}");
+                step.summary = format!("The network check failed to run: {err}");
             }
             Ok(network) => {
                 let mut findings = network.local.clone();
@@ -257,25 +272,26 @@ impl GuestFlow {
                     .find(|finding| finding.severity == Severity::Problem)
                 {
                     step.status = Status::Failed;
-                    step.summary = problem.text.clone();
+                    step.summary = checks::sentence(&problem.text);
                     self.findings = findings;
                     self.draw_link(now);
                     return Vec::new();
                 }
                 step.status = Status::Ok;
-                step.summary = match network.adapter {
+                step.summary = DONE[NETWORK].into();
+                step.details = vec![Detail::Text(match network.adapter {
                     Some(adapter) => {
                         format!("{} reaches {} through {adapter}", self.own, self.host)
                     }
                     None => format!("{} reaches {}", self.own, self.host),
-                };
+                })];
                 self.findings = findings;
                 self.draw_link(now);
             }
         }
         let hosts = &mut self.steps[HOSTS];
         hosts.status = Status::Running;
-        hosts.summary = "reading the hosts file".into();
+        hosts.summary = "Reading the hosts file".into();
         vec![GuestAction::ReadHosts]
     }
 
@@ -298,19 +314,21 @@ impl GuestFlow {
                 Status::Failed
             };
             step.summary = match error {
-                Some(error) if !restored => error,
-                _ => text,
+                Some(error) if !restored => checks::sentence(&error),
+                _ if restored => WAITING[HOSTS].into(),
+                _ => checks::sentence(&text),
             };
             return Vec::new();
         }
         match state {
             Ok(State::Redirected(address)) if address == self.host => {
                 step.status = Status::Ok;
-                step.pill = Some("done");
-                step.summary = format!("hosts → {}", self.host);
+                step.summary = DONE[HOSTS].into();
+                step.details
+                    .insert(0, Detail::Text(format!("hosts → {}", self.host)));
                 let reach = &mut self.steps[REACH];
                 reach.status = Status::Running;
-                reach.summary = "asking the host's server".into();
+                reach.summary = "Asking the host's server".into();
                 vec![GuestAction::Reach {
                     host: self.host,
                     name: self.name.clone(),
@@ -320,12 +338,12 @@ impl GuestFlow {
                 self.wrote_hosts = true;
                 self.elevation = Some(Elevation::Hosts);
                 step.status = Status::Running;
-                step.summary = "waiting for the administrator prompt".into();
+                step.summary = PROMPT.into();
                 vec![GuestAction::WriteHosts(self.host)]
             }
             _ => {
                 step.status = Status::Failed;
-                step.summary = self.elevation_error.take().unwrap_or(text);
+                step.summary = checks::sentence(&self.elevation_error.take().unwrap_or(text));
                 Vec::new()
             }
         }
@@ -345,7 +363,7 @@ impl GuestFlow {
             },
             Some(Elevation::Restore) => {
                 // Restoring ends the connection: the later steps start over.
-                self.steps[REACH] = Step::new(TITLES[REACH]);
+                self.steps[REACH] = Step::new(WAITING[REACH]);
                 self.link = Link::default();
                 self.nickname = None;
                 self.draw_link(now);
@@ -363,7 +381,7 @@ impl GuestFlow {
         step.details = checks::details(&findings);
         if let Some(failed) = checks::first_failure(reports) {
             step.status = Status::Failed;
-            step.summary = checks::report_finding(failed).text;
+            step.summary = checks::sentence(&checks::report_finding(failed).text);
             return Vec::new();
         }
         let nickname = reports
@@ -375,8 +393,8 @@ impl GuestFlow {
             _ => Status::Ok,
         };
         step.summary = match nickname.map(|report| &report.result) {
-            Some(Ok(text) | Err(text)) => format!("all services answer; {text}"),
-            None => "all services answer".into(),
+            Some(Ok(text) | Err(text)) if !text.is_empty() => checks::sentence(text),
+            _ => DONE[REACH].into(),
         };
         self.start_exchange(now)
     }
@@ -389,7 +407,7 @@ impl GuestFlow {
     }
 
     fn draw_link(&mut self, now: Instant) {
-        let mut step = self.link.step(TITLES[LINK], now, SILENT_HINT);
+        let mut step = self.link.step(WAITING[LINK], DONE[LINK], now, SILENT_HINT);
         checks::add_findings(&mut step, &self.findings);
         if self.link.running() || !step.details.is_empty() {
             step.note = Some(LINK_NOTE.into());
@@ -401,55 +419,38 @@ impl GuestFlow {
         self.steps[LINK] = step;
     }
 
-    /// Sets the button of the address step for the current state.
+    /// Sets the buttons of the steps for the current state.
     fn draw_buttons(&mut self) {
-        let idle = !self.busy();
-        self.steps[ADDRESS].buttons = vec![Button {
-            label: "Connect",
-            click: Click::Connect,
-            enabled: idle,
-        }];
+        let busy = self.busy().then_some(BUSY);
+        self.steps[NETWORK].buttons =
+            vec![Button::elevated("Connect", Click::Connect).disabled_by(busy)];
         self.steps[LINK]
             .buttons
             .retain(|button| button.click != Click::FixAll);
         // One fix has its own button beside its finding.
         if step::fixes(&self.steps).len() > 1 {
-            self.steps[LINK].buttons.push(Button {
-                label: "Fix it",
-                click: Click::FixAll,
-                enabled: idle,
-            });
+            self.steps[LINK]
+                .buttons
+                .push(Button::elevated("Fix it", Click::FixAll).disabled_by(busy));
         }
     }
 
     fn draw_game(&mut self) {
         let step = &mut self.steps[GAME];
-        *step = Step::new(TITLES[GAME]);
+        *step = Step::new(WAITING[GAME]);
         if self.link.running() {
-            step.summary = "wait until the direct link check ends".into();
+            step.summary = "Wait until the direct link check ends".into();
         } else if self.link.works() {
             step.status = Status::Ok;
-            step.summary = "start the game and play online co-op".into();
+            step.summary = DONE[GAME].into();
             step.details = vec![
                 Detail::Text("a public game: the host creates it, then choose quick match".into()),
                 Detail::Text("a private game: accept the host's invite in the EA App".into()),
             ];
         } else if self.link.failed() {
             step.status = Status::Warning;
-            step.pill = Some("at risk");
-            step.summary = "the direct link failed, so co-op may not connect".into();
-        } else {
-            step.summary = "online co-op".into();
+            step.summary = "The direct link failed, so co-op may not connect".into();
         }
-    }
-}
-
-/// Returns `text` with its first letter in upper case.
-fn capitalised(text: &str) -> String {
-    let mut letters = text.chars();
-    match letters.next() {
-        Some(first) => first.to_uppercase().chain(letters).collect(),
-        None => String::new(),
     }
 }
 
@@ -527,7 +528,7 @@ mod tests {
                 peer: HOST
             }]
         );
-        assert_eq!(flow.steps()[ADDRESS].status, Status::Running);
+        assert_eq!(flow.steps()[NETWORK].status, Status::Running);
     }
 
     #[test]
@@ -543,8 +544,8 @@ mod tests {
             now,
         );
         assert!(actions.is_empty());
-        assert_eq!(flow.steps()[ADDRESS].status, Status::Failed);
-        assert_eq!(flow.steps()[ADDRESS].summary, "the route takes Wi-Fi");
+        assert_eq!(flow.steps()[NETWORK].status, Status::Failed);
+        assert_eq!(flow.steps()[NETWORK].summary, "The route takes Wi-Fi");
         assert_eq!(flow.steps()[HOSTS].status, Status::Waiting);
     }
 
@@ -567,7 +568,10 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(flow.steps()[HOSTS].status, Status::Failed);
-        assert_eq!(flow.steps()[HOSTS].summary, State::EaServers.to_string());
+        assert_eq!(
+            flow.steps()[HOSTS].summary,
+            checks::sentence(&State::EaServers.to_string())
+        );
     }
 
     #[test]
@@ -585,7 +589,7 @@ mod tests {
         flow.apply(GuestInput::Hosts(Ok(State::EaServers)), now);
         assert_eq!(
             flow.steps()[HOSTS].summary,
-            "the administrator prompt was declined"
+            "The administrator prompt was declined"
         );
     }
 
@@ -602,7 +606,53 @@ mod tests {
                 name: "Carver".into()
             }]
         );
-        assert_eq!(flow.steps()[HOSTS].summary, format!("hosts → {HOST}"));
+        assert_eq!(flow.steps()[HOSTS].summary, DONE[HOSTS]);
+    }
+
+    #[test]
+    fn waiting_steps_say_what_they_will_do() {
+        let summaries: Vec<String> = flow()
+            .steps()
+            .iter()
+            .map(|step| step.summary.clone())
+            .collect();
+        assert_eq!(summaries, WAITING);
+    }
+
+    #[test]
+    fn a_done_step_moves_its_technical_line_to_the_details() {
+        let now = Instant::now();
+        let flow = reaching(now);
+        let hosts = &flow.steps()[HOSTS];
+        assert_eq!(hosts.summary, "The game goes to the host's PC");
+        assert_eq!(hosts.details[0], Detail::Text(format!("hosts → {HOST}")));
+        assert_eq!(flow.steps()[NETWORK].summary, DONE[NETWORK]);
+    }
+
+    #[test]
+    fn buttons_that_ask_for_permission_say_so() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        assert!(flow.steps()[NETWORK].buttons[0].elevates);
+        assert!(flow.footer().button.elevates);
+        assert!(Button::fix(&Fix::GameRule).elevates);
+        flow.apply(GuestInput::Reach(reports(Ok(String::new()))), now);
+        flow.apply(GuestInput::Exchange(Ok(Outcome::default())), now);
+        let check_again = &flow.steps()[LINK].buttons[0];
+        assert_eq!(check_again.click, Click::CheckAgain);
+        assert!(!check_again.elevates);
+    }
+
+    #[test]
+    fn a_disabled_button_says_why() {
+        let mut flow = flow();
+        assert_eq!(flow.footer().button.disabled, Some(NOTHING_TO_UNDO));
+        flow.apply(GuestInput::Click(Click::Connect), Instant::now());
+        assert_eq!(
+            flow.steps()[NETWORK].buttons[0].disabled,
+            Some("Wait until the current step ends")
+        );
+        assert_eq!(flow.footer().button.disabled, Some(BUSY));
     }
 
     #[test]
@@ -616,10 +666,9 @@ mod tests {
         assert_eq!(actions, [GuestAction::Exchange { peer: HOST }]);
         assert_eq!(flow.steps()[REACH].status, Status::Warning);
         assert!(flow.steps()[REACH].summary.contains("refused the name"));
-        assert!(
-            flow.steps()[GAME]
-                .summary
-                .starts_with("wait until the direct link check ends")
+        assert_eq!(
+            flow.steps()[GAME].summary,
+            "Wait until the direct link check ends"
         );
     }
 
@@ -637,10 +686,10 @@ mod tests {
             })),
             now,
         );
-        assert_eq!(flow.steps()[ADDRESS].status, Status::Ok);
+        assert_eq!(flow.steps()[NETWORK].status, Status::Ok);
         let link = &flow.steps()[LINK];
         assert_eq!(link.status, Status::Warning);
-        assert_eq!(link.summary, "1 issue found");
+        assert_eq!(link.summary, "1 thing to fix on this PC");
         assert_eq!(link.details.len(), 2);
     }
 
@@ -650,7 +699,7 @@ mod tests {
         let mut flow = reaching(now);
         assert_eq!(flow.footer().text, "You join as Carver");
         // The button waits for the running step.
-        assert!(!flow.footer().button.enabled);
+        assert!(!flow.footer().button.enabled());
         flow.apply(
             GuestInput::Reach(reports(Ok("the host sees you as Carver".into()))),
             now,
@@ -667,10 +716,7 @@ mod tests {
             now,
         );
         assert_eq!(flow.steps()[REACH].status, Status::Ok);
-        assert_eq!(
-            flow.steps()[REACH].summary,
-            "all services answer; the host sees you as Carver"
-        );
+        assert_eq!(flow.steps()[REACH].summary, "The host sees you as Carver");
     }
 
     #[test]
@@ -751,7 +797,7 @@ mod tests {
             flow.apply(GuestInput::Hosts(Ok(State::EaServers)), now)
                 .is_empty()
         );
-        assert_eq!(flow.steps()[HOSTS].summary, State::EaServers.to_string());
+        assert_eq!(flow.steps()[HOSTS].summary, WAITING[HOSTS]);
         assert_eq!(flow.steps()[HOSTS].status, Status::Waiting);
         assert_eq!(flow.steps()[LINK].status, Status::Waiting);
         assert!(!flow.busy());

@@ -68,11 +68,13 @@ impl Link {
         self.result = Some(result.map_err(|err| err.to_string()));
     }
 
-    /// Returns the step titled `title` as the exchange stands at `now`.
+    /// Returns the step as the exchange stands at `now`: saying `waiting`
+    /// before any exchange and `done` once both directions work, with the
+    /// counters and a failure's text in the details.
     ///
     /// `silent_hint` is added when nothing arrived either way.
-    pub fn step(&self, title: &str, now: Instant, silent_hint: &str) -> Step {
-        let mut step = Step::new(title);
+    pub fn step(&self, waiting: &str, done: &str, now: Instant, silent_hint: &str) -> Step {
+        let mut step = Step::new(waiting);
         let mut directions = Vec::new();
         if self.peer_reaches_this_pc {
             directions.push(Detail::Text("the other player reaches this PC".into()));
@@ -84,10 +86,10 @@ impl Link {
             step.status = Status::Running;
             step.summary = match self.until {
                 Some(until) => format!(
-                    "checking both directions, {} s left",
+                    "Checking the direct link, {} s left",
                     until.saturating_duration_since(now).as_secs()
                 ),
-                None => "starting the check".into(),
+                None => "Checking the direct link".into(),
             };
             step.details = directions;
             return step;
@@ -95,11 +97,8 @@ impl Link {
         let Some(result) = &self.result else {
             return step;
         };
-        step.buttons.push(Button {
-            label: "Check again",
-            click: Click::CheckAgain,
-            enabled: true,
-        });
+        step.buttons
+            .push(Button::new("Check again", Click::CheckAgain));
         step.details = directions;
         if let Ok(outcome) = result {
             step.details.push(Detail::Text(format!(
@@ -115,11 +114,14 @@ impl Link {
         match &self.failure {
             None => {
                 step.status = Status::Ok;
-                step.summary = format!("UDP {} both ways", p2p::GAME_PORT);
+                step.summary = done.into();
+                step.details
+                    .insert(0, Detail::Text(format!("UDP {} both ways", p2p::GAME_PORT)));
             }
             Some(failure) => {
                 step.status = Status::Failed;
-                step.summary = failure.clone();
+                step.summary = "The direct link failed".into();
+                step.details.insert(0, Detail::Text(failure.clone()));
                 let silent =
                     matches!(result, Ok(outcome) if outcome.answered == 0 && outcome.received == 0);
                 if silent {
@@ -145,10 +147,10 @@ mod tests {
             target: "26.0.0.1:3659".parse().unwrap(),
             until: tokio::time::Instant::from_std(now + Duration::from_secs(20)),
         });
-        let step = link.step("Direct link", now, "");
+        let step = link.step("Check", "Works", now, "");
         assert_eq!(step.status, Status::Running);
         assert!(step.summary.contains("20 s left"), "{}", step.summary);
-        let later = link.step("Direct link", now + Duration::from_secs(5), "");
+        let later = link.step("Check", "Works", now + Duration::from_secs(5), "");
         assert!(later.summary.contains("15 s left"), "{}", later.summary);
     }
 
@@ -163,8 +165,9 @@ mod tests {
             }),
             &[],
         );
-        let step = link.step("Direct link", Instant::now(), "close the game");
+        let step = link.step("Check", "Works", Instant::now(), "close the game");
         assert_eq!(step.status, Status::Failed);
+        assert_eq!(step.summary, "The direct link failed");
         assert!(
             step.details
                 .contains(&Detail::Text("close the game".into()))
@@ -187,9 +190,18 @@ mod tests {
             &[],
         );
         assert!(link.works());
+        let step = link.step("Check", "Works", Instant::now(), "");
+        assert_eq!(step.status, Status::Ok);
+        assert_eq!(step.summary, "Works");
         assert_eq!(
-            link.step("Direct link", Instant::now(), "").status,
-            Status::Ok
+            step.details[0],
+            Detail::Text(format!("UDP {} both ways", p2p::GAME_PORT))
+        );
+        assert_eq!(
+            Link::default()
+                .step("Check", "Works", Instant::now(), "")
+                .summary,
+            "Check"
         );
     }
 }

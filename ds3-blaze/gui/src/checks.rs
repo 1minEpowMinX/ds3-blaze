@@ -9,11 +9,21 @@ pub fn details(findings: &[Finding]) -> Vec<Detail> {
     findings.iter().cloned().map(Detail::Finding).collect()
 }
 
+/// Returns `text` as a sentence: its first letter in upper case.
+pub fn sentence(text: &str) -> String {
+    let mut letters = text.chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().chain(letters).collect(),
+        None => String::new(),
+    }
+}
+
 /// Puts `findings` at the head of `step`'s details and, unless the step runs
 /// or ended well, makes the number of issues among them its summary and the
 /// step a warning.
 ///
-/// A step that failed moves its summary into the details.
+/// A step that failed moves its summary into the details, after the
+/// findings.
 pub fn add_findings(step: &mut Step, findings: &[Finding]) {
     let mut lines = details(findings);
     lines.append(&mut step.details);
@@ -27,15 +37,14 @@ pub fn add_findings(step: &mut Step, findings: &[Finding]) {
     }
     if step.status == Status::Failed {
         let failure = std::mem::take(&mut step.summary);
-        step.details.push(Detail::Text(failure));
+        step.details.insert(findings.len(), Detail::Text(failure));
     }
     // The issues name what to change, so the step asks for a fix rather
     // than reporting a failure.
     step.status = Status::Warning;
-    step.pill = Some("needs fix");
     step.summary = match issues {
-        1 => "1 issue found".into(),
-        issues => format!("{issues} issues found"),
+        1 => "1 thing to fix on this PC".into(),
+        issues => format!("{issues} things to fix on this PC"),
     };
 }
 
@@ -80,7 +89,7 @@ mod tests {
         let mut waiting = Step::new("Direct link");
         add_findings(&mut waiting, &findings);
         assert_eq!(waiting.status, Status::Warning);
-        assert_eq!(waiting.summary, "1 issue found");
+        assert_eq!(waiting.summary, "1 thing to fix on this PC");
         assert_eq!(waiting.details.len(), 2);
 
         let mut failed = Step::new("Direct link");
@@ -88,11 +97,7 @@ mod tests {
         failed.summary = "no answer".into();
         add_findings(&mut failed, &findings);
         assert_eq!(failed.status, Status::Warning);
-        assert_eq!(failed.pill(), "needs fix");
-        assert_eq!(
-            failed.details.last(),
-            Some(&Detail::Text("no answer".into()))
-        );
+        assert_eq!(failed.details[2], Detail::Text("no answer".into()));
 
         let mut working = Step::new("Direct link");
         working.status = Status::Ok;
@@ -100,6 +105,15 @@ mod tests {
         add_findings(&mut working, &findings);
         assert_eq!(working.summary, "both ways");
         assert_eq!(working.details.len(), 2);
+    }
+
+    #[test]
+    fn a_sentence_starts_with_a_capital() {
+        assert_eq!(
+            sentence("the host sees you as Carver"),
+            "The host sees you as Carver"
+        );
+        assert_eq!(sentence(""), "");
     }
 
     #[test]

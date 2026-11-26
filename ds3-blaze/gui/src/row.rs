@@ -1,9 +1,8 @@
-//! The row a step is drawn as: a marker, the title, the summary, a status
-//! pill and a chevron on one line, and the details in a panel below it while
-//! the row is open.
+//! The row a step is drawn as: a marker, the step's sentence and a chevron
+//! on one line, and the details in a panel below it while the row is open.
 
-use crate::step::{Click, Detail, Status, Step};
-use ds3_blaze_diag::netcheck::{Finding, Fix, Severity};
+use crate::step::{Button, Click, Detail, Status, Step};
+use ds3_blaze_diag::netcheck::{Finding, Severity};
 use eframe::egui::{
     self, Align, Align2, Color32, CursorIcon, FontId, Label, Layout, Margin, Pos2, RichText, Sense,
     Stroke, Vec2, vec2,
@@ -15,11 +14,8 @@ const LINE_HEIGHT: f32 = 44.0;
 /// Diameter of the marker at the start of a line.
 const MARKER_SIZE: f32 = 24.0;
 
-/// Space before the marker and between the marker and the title.
+/// Space before the marker and between the marker and the sentence.
 const MARKER_GAP: f32 = 10.0;
-
-/// Width of the title column.
-const TITLE_WIDTH: f32 = 210.0;
 
 pub const GREEN: Color32 = Color32::from_rgb(95, 185, 105);
 pub const ORANGE: Color32 = Color32::from_rgb(230, 150, 50);
@@ -38,10 +34,10 @@ fn status_colour(status: Status) -> Color32 {
     }
 }
 
-/// Returns the space a line gives the marker and the title, before the
-/// summary or the input starts.
+/// Returns the space a line gives the marker, before the sentence or the
+/// input starts.
 fn lead_width(ui: &egui::Ui) -> f32 {
-    MARKER_GAP + MARKER_SIZE + MARKER_GAP + TITLE_WIDTH + ui.spacing().item_spacing.x * 3.0
+    MARKER_GAP + MARKER_SIZE + MARKER_GAP + ui.spacing().item_spacing.x * 2.0
 }
 
 /// Draws `step` as the row numbered `number` and returns the click a button
@@ -51,20 +47,15 @@ fn lead_width(ui: &egui::Ui) -> f32 {
 /// a note or buttons; they show in a panel below the line while `open` is
 /// true.
 pub fn show(ui: &mut egui::Ui, number: usize, step: &Step, open: &mut bool) -> Option<Click> {
-    let colour = status_colour(step.status);
     let openable = !step.details.is_empty() || step.note.is_some() || !step.buttons.is_empty();
     let line = ui
         .allocate_ui_with_layout(
             vec2(ui.available_width(), LINE_HEIGHT),
             Layout::left_to_right(Align::Center),
             |ui| {
-                lead(ui, Some(number), step);
+                lead(ui, Some(number), step.status);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     chevron(ui, openable.then_some(*open));
-                    let word = step.pill();
-                    if !word.is_empty() {
-                        pill(ui, word, colour);
-                    }
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.add(
                             Label::new(summary_text(step, ui))
@@ -80,7 +71,7 @@ pub fn show(ui: &mut egui::Ui, number: usize, step: &Step, open: &mut bool) -> O
         let line = ui
             .interact(
                 line.rect,
-                egui::Id::unique(("row line", &step.title)),
+                egui::Id::unique(("row line", number)),
                 Sense::click(),
             )
             .on_hover_cursor(CursorIcon::PointingHand);
@@ -113,7 +104,7 @@ pub fn show_input(
         vec2(ui.available_width(), LINE_HEIGHT),
         Layout::left_to_right(Align::Center),
         |ui| {
-            lead(ui, None, step);
+            lead(ui, None, step.status);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 click = buttons(ui, step);
                 ui.with_layout(Layout::left_to_right(Align::Center), input);
@@ -139,30 +130,22 @@ pub fn show_input(
     click
 }
 
-/// Returns the summary as a line shows it: coloured while the step needs
-/// attention.
+/// Returns the sentence as a line shows it: weak while the step waits,
+/// coloured while it needs attention.
 fn summary_text(step: &Step, ui: &egui::Ui) -> RichText {
     let text = RichText::new(&step.summary);
     match step.status {
+        Status::Waiting => text.color(ui.visuals().weak_text_color()),
         Status::Warning | Status::Failed => text.color(status_colour(step.status)),
-        _ => text.color(ui.visuals().text_color()),
+        Status::Running | Status::Ok => text.color(ui.visuals().strong_text_color()),
     }
 }
 
-/// Draws the marker and the title column.
-fn lead(ui: &mut egui::Ui, number: Option<usize>, step: &Step) {
+/// Draws the marker with the space around it.
+fn lead(ui: &mut egui::Ui, number: Option<usize>, status: Status) {
     ui.add_space(MARKER_GAP);
-    marker(ui, number, step.status);
+    marker(ui, number, status);
     ui.add_space(MARKER_GAP);
-    ui.allocate_ui_with_layout(
-        vec2(TITLE_WIDTH, LINE_HEIGHT),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            ui.set_min_width(TITLE_WIDTH);
-            let title = RichText::new(&step.title).color(ui.visuals().strong_text_color());
-            ui.add(Label::new(title).truncate().selectable(false));
-        },
-    );
 }
 
 /// Draws the round marker of a step: its number, if it has one, while it
@@ -240,24 +223,23 @@ fn chevron(ui: &mut egui::Ui, open: Option<bool>) {
     );
 }
 
-/// Draws `word` in a rounded pill tinted with `colour`, as high as its text.
-fn pill(ui: &mut egui::Ui, word: &str, colour: Color32) {
-    let galley = ui
-        .painter()
-        .layout_no_wrap(word.to_string(), FontId::proportional(12.5), colour);
-    let (rect, _) = ui.allocate_exact_size(galley.size() + vec2(18.0, 6.0), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, 10.0, colour.gamma_multiply(0.18));
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, colour);
+/// Draws `button` at least `height` points high and returns whether it was
+/// pressed; a disabled button tells why on hover.
+pub fn action(ui: &mut egui::Ui, button: &Button, height: f32) -> bool {
+    let widget = egui::Button::new(button.label).min_size(vec2(0.0, height));
+    let response = ui.add_enabled(button.enabled(), widget);
+    let response = match button.disabled {
+        Some(reason) => response.on_disabled_hover_text(reason),
+        None => response,
+    };
+    response.clicked()
 }
 
 /// Draws the step's buttons right to left and returns the click one gave.
 fn buttons(ui: &mut egui::Ui, step: &Step) -> Option<Click> {
     let mut click = None;
     for button in step.buttons.iter().rev() {
-        let widget = egui::Button::new(button.label).min_size(vec2(0.0, 30.0));
-        if ui.add_enabled(button.enabled, widget).clicked() {
+        if action(ui, button, 30.0) {
             click = Some(button.click.clone());
         }
     }
@@ -320,14 +302,6 @@ fn show_detail(ui: &mut egui::Ui, detail: &Detail) -> Option<Click> {
     }
 }
 
-/// Returns the label of the button that applies `fix`.
-fn fix_label(fix: &Fix) -> &'static str {
-    match fix {
-        Fix::GameRule | Fix::ServerRule(_) => "Add rule",
-        Fix::PrivateProfile(_) => "Make private",
-    }
-}
-
 /// Draws a finding with its sign and its fix button.
 fn show_finding(ui: &mut egui::Ui, finding: &Finding) -> Option<Click> {
     egui::Sides::new()
@@ -339,10 +313,8 @@ fn show_finding(ui: &mut egui::Ui, finding: &Finding) -> Option<Click> {
                 ui.add(Label::new(finding.text.as_str()).wrap());
             },
             |ui| {
-                let fix = finding.fix.as_ref()?;
-                ui.add(egui::Button::new(fix_label(fix)).min_size(vec2(0.0, 26.0)))
-                    .clicked()
-                    .then(|| Click::Fix(fix.clone()))
+                let button = Button::fix(finding.fix.as_ref()?);
+                action(ui, &button, 26.0).then_some(button.click)
             },
         )
         .1

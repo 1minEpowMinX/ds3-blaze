@@ -2,10 +2,11 @@
 //! direct link to the guest; and the session the server's state makes up.
 
 use crate::checks;
+use crate::guest::PROMPT;
 use crate::link::Link;
 use crate::network::Network;
 use crate::session::{self, PlayerRow, SessionView};
-use crate::step::{self, Button, Click, Detail, Footer, Status, Step};
+use crate::step::{self, BUSY, Button, Click, Detail, Footer, NOTHING_TO_UNDO, Status, Step};
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_core::players::{Roster, check_nickname};
 use ds3_blaze_core::server::Ports;
@@ -23,12 +24,20 @@ const HOSTS: usize = 1;
 const SERVER: usize = 2;
 const LINK: usize = 3;
 
-/// Titles of the steps, in the order they run.
-const TITLES: [&str; 4] = [
-    "Your VPN address",
-    "Point game at this PC",
-    "Server",
-    "Direct link to the guest",
+/// What each step says while it waits, in the order the steps run.
+const WAITING: [&str; 4] = [
+    "Check this PC's network",
+    "Point the game at this PC",
+    "Start the server",
+    "Check the direct link to the guest",
+];
+
+/// What each step says once it is done.
+const DONE: [&str; 4] = [
+    "This PC's network is ready",
+    "The game goes to this PC",
+    "The server is running",
+    "The direct link works",
 ];
 
 /// Number of recent log lines the flow keeps.
@@ -164,7 +173,7 @@ impl HostFlow {
             own,
             name,
             known,
-            steps: TITLES.iter().map(|title| Step::new(title)).collect(),
+            steps: WAITING.iter().map(|waiting| Step::new(waiting)).collect(),
             trigger: Trigger::default(),
             guest: None,
             local: Vec::new(),
@@ -197,12 +206,15 @@ impl HostFlow {
     pub fn footer(&self) -> Footer {
         Footer {
             text: format!("Guests connect to {}", self.own),
-            button: Button {
-                label: "Stop and restore hosts",
-                click: Click::RestoreHosts,
-                enabled: !self.busy()
-                    && (self.serving() || self.steps[HOSTS].status != Status::Waiting),
-            },
+            button: Button::elevated("Stop and restore hosts", Click::RestoreHosts).disabled_by(
+                if self.busy() {
+                    Some(BUSY)
+                } else if !self.serving() && self.steps[HOSTS].status == Status::Waiting {
+                    Some(NOTHING_TO_UNDO)
+                } else {
+                    None
+                },
+            ),
         }
     }
 
@@ -371,8 +383,8 @@ impl HostFlow {
     fn click(&mut self, click: Click, now: Instant) -> Vec<HostAction> {
         match click {
             Click::StartServer => {
-                for (index, title) in TITLES.iter().enumerate().take(SERVER + 1) {
-                    self.steps[index] = Step::new(title);
+                for (index, waiting) in WAITING.iter().enumerate().take(SERVER + 1) {
+                    self.steps[index] = Step::new(waiting);
                 }
                 self.starting = true;
                 self.wrote_hosts = false;
@@ -388,12 +400,10 @@ impl HostFlow {
             Click::RestoreHosts => {
                 self.elevation = Some(Elevation::Restore);
                 self.ports = None;
-                let server = &mut self.steps[SERVER];
-                *server = Step::new(TITLES[SERVER]);
-                server.summary = "stopped".into();
+                self.steps[SERVER] = Step::new(WAITING[SERVER]);
                 let hosts = &mut self.steps[HOSTS];
                 hosts.status = Status::Running;
-                hosts.summary = "waiting for the administrator prompt".into();
+                hosts.summary = PROMPT.into();
                 vec![HostAction::StopAndRestore]
             }
             Click::Rename(ip, typed) => self.rename(ip, typed),
@@ -438,7 +448,7 @@ impl HostFlow {
     fn check_network(&mut self) -> Vec<HostAction> {
         let step = &mut self.steps[NETWORK];
         step.status = Status::Running;
-        step.summary = "reading this PC's network settings, a few seconds".into();
+        step.summary = "Checking this PC's network".into();
         vec![HostAction::CheckNetwork { own: self.own }]
     }
 
@@ -447,14 +457,15 @@ impl HostFlow {
         match network {
             Err(err) => {
                 step.status = Status::Warning;
-                step.summary = format!("the network check failed to run: {err}");
+                step.summary = format!("The network check failed to run: {err}");
             }
             Ok(network) => {
                 step.status = Status::Ok;
-                step.summary = match network.adapter {
+                step.summary = DONE[NETWORK].into();
+                step.details = vec![Detail::Text(match network.adapter {
                     Some(adapter) => format!("{} on {adapter}", self.own),
                     None => self.own.to_string(),
-                };
+                })];
                 self.local = network.local;
                 self.other_vpn = network.other_vpn;
                 self.draw_link(now);
@@ -465,7 +476,7 @@ impl HostFlow {
         }
         let hosts = &mut self.steps[HOSTS];
         hosts.status = Status::Running;
-        hosts.summary = "reading the hosts file".into();
+        hosts.summary = "Reading the hosts file".into();
         vec![HostAction::ReadHosts]
     }
 
@@ -488,8 +499,9 @@ impl HostFlow {
                 Status::Failed
             };
             step.summary = match error {
-                Some(error) if !restored => error,
-                _ => text,
+                Some(error) if !restored => checks::sentence(&error),
+                _ if restored => WAITING[HOSTS].into(),
+                _ => checks::sentence(&text),
             };
             return Vec::new();
         }
@@ -499,11 +511,12 @@ impl HostFlow {
         match state {
             Ok(State::Redirected(address)) if address == Ipv4Addr::LOCALHOST => {
                 step.status = Status::Ok;
-                step.pill = Some("done");
-                step.summary = format!("hosts → {address}");
+                step.summary = DONE[HOSTS].into();
+                step.details
+                    .insert(0, Detail::Text(format!("hosts → {address}")));
                 let server = &mut self.steps[SERVER];
                 server.status = Status::Running;
-                server.summary = "starting".into();
+                server.summary = "Starting the server".into();
                 vec![HostAction::StartServer {
                     advertise: self.own,
                     roster: Roster {
@@ -517,13 +530,13 @@ impl HostFlow {
                 self.wrote_hosts = true;
                 self.elevation = Some(Elevation::Hosts);
                 step.status = Status::Running;
-                step.summary = "waiting for the administrator prompt".into();
+                step.summary = PROMPT.into();
                 vec![HostAction::WriteHosts]
             }
             _ => {
                 self.starting = false;
                 step.status = Status::Failed;
-                step.summary = self.elevation_error.take().unwrap_or(text);
+                step.summary = checks::sentence(&self.elevation_error.take().unwrap_or(text));
                 Vec::new()
             }
         }
@@ -555,13 +568,13 @@ impl HostFlow {
         match result {
             Err(err) => {
                 step.status = Status::Failed;
-                step.summary = format!("the server did not start: {err}");
+                step.summary = format!("The server did not start: {err}");
                 Vec::new()
             }
             Ok(ports) => {
                 self.ports = Some(ports);
                 step.status = Status::Running;
-                step.summary = format!("checking the server at {}", self.own);
+                step.summary = "Checking the server".into();
                 step.details = vec![Detail::Text(format!(
                     "redirector on TCP {}, Blaze on TCP {}, QoS on TCP {} and UDP {}",
                     ports.redirector, ports.blaze, ports.qos.http, ports.qos.udp
@@ -585,12 +598,11 @@ impl HostFlow {
         match checks::first_failure(reports) {
             Some(failed) => {
                 step.status = Status::Failed;
-                step.summary = checks::report_finding(failed).text;
+                step.summary = checks::sentence(&checks::report_finding(failed).text);
             }
             None => {
                 step.status = Status::Ok;
-                step.pill = Some("running");
-                step.summary = format!("listening on {}", self.own);
+                step.summary = DONE[SERVER].into();
             }
         }
     }
@@ -625,26 +637,23 @@ impl HostFlow {
     }
 
     fn draw_link(&mut self, now: Instant) {
-        let title = match self.guest {
-            Some(guest) => format!(
-                "Direct link to {}",
-                self.snapshot.roster.name_for(guest, self.own)
-            ),
-            None => TITLES[LINK].into(),
+        let name = self
+            .guest
+            .map(|guest| self.snapshot.roster.name_for(guest, self.own));
+        let waiting = match &name {
+            Some(name) => format!("Check the direct link to {name}"),
+            None => WAITING[LINK].into(),
         };
-        let mut step = self.link.step(&title, now, SILENT_HINT);
-        if self.guest.is_none() {
-            step.summary = "starts when the guest connects".into();
-        }
+        let mut step = self.link.step(&waiting, DONE[LINK], now, SILENT_HINT);
         let mut findings = self.local.clone();
         findings.extend(self.route.iter().cloned());
         checks::add_findings(&mut step, &findings);
         if self.guest.is_some() || !step.details.is_empty() {
             step.note = Some(LINK_NOTE.into());
         }
-        if let Some(guest) = self.guest {
+        if let (Some(guest), Some(name)) = (self.guest, name) {
             step.details
-                .insert(0, Detail::Text(format!("the guest at {guest}")));
+                .insert(0, Detail::Text(format!("{name} at {guest}")));
         }
         if let Some(error) = &self.fix_error {
             step.details
@@ -655,22 +664,22 @@ impl HostFlow {
 
     /// Sets the buttons each step shows for the current state.
     fn draw_buttons(&mut self) {
-        let idle = !self.busy();
-        self.steps[NETWORK].buttons = vec![Button {
-            label: "Start server",
-            click: Click::StartServer,
-            enabled: idle && !self.serving(),
-        }];
+        let busy = self.busy().then_some(BUSY);
+        let start = if self.serving() {
+            Some("The server is already running")
+        } else {
+            busy
+        };
+        self.steps[NETWORK].buttons =
+            vec![Button::elevated("Start server", Click::StartServer).disabled_by(start)];
         self.steps[LINK]
             .buttons
             .retain(|button| button.click != Click::FixAll);
         // One fix has its own button beside its finding.
         if step::fixes(&self.steps).len() > 1 {
-            self.steps[LINK].buttons.push(Button {
-                label: "Fix it",
-                click: Click::FixAll,
-                enabled: idle,
-            });
+            self.steps[LINK]
+                .buttons
+                .push(Button::elevated("Fix it", Click::FixAll).disabled_by(busy));
         }
     }
 }
@@ -766,8 +775,24 @@ mod tests {
             now,
         );
         assert_eq!(flow.steps()[SERVER].status, Status::Ok);
-        assert_eq!(flow.steps()[SERVER].summary, format!("listening on {OWN}"));
+        assert_eq!(flow.steps()[SERVER].summary, DONE[SERVER]);
+        assert!(flow.steps()[NETWORK].buttons[0].elevates);
+        assert_eq!(
+            flow.steps()[NETWORK].buttons[0].disabled,
+            Some("The server is already running")
+        );
         assert!(!flow.busy());
+    }
+
+    #[test]
+    fn waiting_steps_say_what_they_will_do() {
+        let summaries: Vec<String> = flow()
+            .steps()
+            .iter()
+            .map(|step| step.summary.clone())
+            .collect();
+        assert_eq!(summaries, WAITING);
+        assert_eq!(flow().footer().button.disabled, Some(NOTHING_TO_UNDO));
     }
 
     #[test]
@@ -912,7 +937,11 @@ mod tests {
             }),
             now,
         );
-        assert_eq!(flow.steps()[LINK].title, "Direct link to Partner");
+        assert!(
+            flow.steps()[LINK]
+                .details
+                .contains(&Detail::Text(format!("Partner at {GUEST}")))
+        );
     }
 
     #[test]
@@ -923,9 +952,9 @@ mod tests {
         assert!(session.players[0].you && session.players[0].address == OWN);
         assert!(!session.only_allowed);
         assert_eq!(flow.footer().text, format!("Guests connect to {OWN}"));
-        assert!(!flow.footer().button.enabled);
+        assert!(!flow.footer().button.enabled());
         flow.apply(HostInput::SelfReach(Vec::new()), now);
-        assert!(flow.footer().button.enabled);
+        assert!(flow.footer().button.enabled());
     }
 
     #[test]
