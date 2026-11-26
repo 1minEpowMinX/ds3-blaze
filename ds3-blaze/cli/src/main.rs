@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand};
 use ds3_blaze_core::event::{self, Event};
 use ds3_blaze_core::hosts::{self, Action, State};
 use ds3_blaze_core::log;
-use ds3_blaze_core::players::Roster;
+use ds3_blaze_core::players::{self, Roster};
 use ds3_blaze_core::server::{self, DEFAULT_BLAZE_PORT, Server};
 use ds3_blaze_diag::fix;
 use ds3_blaze_diag::netcheck::{self, Finding, Fix, Own, Setup, Severity};
@@ -130,7 +130,7 @@ struct ServeArgs {
     #[arg(long, value_name = "PORT", default_value_t = DEFAULT_BLAZE_PORT)]
     blaze_port: u16,
     /// Display name of the player on this machine.
-    #[arg(long, value_name = "NAME", default_value = DEFAULT_NAME, value_parser = non_empty)]
+    #[arg(long, value_name = "NAME", default_value = DEFAULT_NAME, value_parser = nickname)]
     name: String,
     /// Display name of the player connecting from IP; others get Player-<last
     /// octet of their IP>.
@@ -166,20 +166,19 @@ struct EaArgs {
     ea_redirector: std::net::SocketAddr,
 }
 
-/// Returns `name` when it holds more than white space.
-fn non_empty(name: &str) -> Result<String, String> {
-    if name.trim().is_empty() {
-        Err("the name is empty".into())
-    } else {
-        Ok(name.to_string())
-    }
+/// Returns `name` when [`players::check_nickname`] accepts it, or the reason
+/// it is refused.
+fn nickname(name: &str) -> Result<String, String> {
+    players::check_nickname(name)
+        .map(|()| name.to_string())
+        .map_err(|reason| format!("the name is refused: {reason}"))
 }
 
 /// Returns the address and the name of an `IP=NAME` entry.
 fn player(entry: &str) -> Result<(Ipv4Addr, String), String> {
     let (ip, name) = entry.split_once('=').ok_or("expected IP=NAME")?;
     let ip = ip.parse().map_err(|err| format!("{ip}: {err}"))?;
-    Ok((ip, non_empty(name)?))
+    Ok((ip, nickname(name)?))
 }
 
 #[cfg(feature = "research")]
@@ -591,6 +590,7 @@ mod tests {
         );
         assert!(player("26.0.0.2").is_err());
         assert!(player("26.0.0.2= ").is_err());
+        assert!(player("26.0.0.2=Isaac Clarke").is_err());
         assert!(player("26.0.2=Carver").is_err());
     }
 
@@ -625,6 +625,13 @@ mod tests {
             ),
             "ds3-blaze fix network-profile --address 26.0.0.1"
         );
+    }
+
+    #[test]
+    fn default_name_is_a_nickname() {
+        // clap parses a string default with the value parser, so a refused
+        // default would fail every `serve` started without --name.
+        assert_eq!(nickname(DEFAULT_NAME), Ok(DEFAULT_NAME.to_string()));
     }
 
     #[test]

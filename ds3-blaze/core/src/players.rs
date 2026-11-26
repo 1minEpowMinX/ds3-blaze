@@ -3,7 +3,33 @@
 use crate::event;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
+use std::ops::RangeInclusive;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+/// Lengths a nickname may have; EA persona names have the same.
+pub const NICKNAME_LENGTH: RangeInclusive<usize> = 4..=16;
+
+/// Returns `Ok` when `name` has a length within [`NICKNAME_LENGTH`] and only
+/// ASCII letters, digits, `-` and `_`, or the reason it does not.
+pub fn check_nickname(name: &str) -> Result<(), String> {
+    if let Some(c) = name
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || *c == '-' || *c == '_'))
+    {
+        return Err(format!(
+            "{c:?} is not allowed; use letters, digits, - and _"
+        ));
+    }
+    // The characters are checked first, so the byte length here is the character count.
+    if !NICKNAME_LENGTH.contains(&name.len()) {
+        return Err(format!(
+            "a name has {} to {} characters",
+            NICKNAME_LENGTH.start(),
+            NICKNAME_LENGTH.end()
+        ));
+    }
+    Ok(())
+}
 
 /// Contents of a [`PlayerBook`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -169,6 +195,20 @@ mod tests {
         assert_eq!(book.name_for(STRANGER), "Carver");
         book.set_name(STRANGER, None);
         assert_eq!(book.name_for(STRANGER), "Player-3");
+    }
+
+    #[test]
+    fn nicknames_follow_ea_persona_names() {
+        let shortest = "a".repeat(*NICKNAME_LENGTH.start());
+        let longest = "a".repeat(*NICKNAME_LENGTH.end());
+        assert_eq!(check_nickname(&shortest), Ok(()));
+        assert_eq!(check_nickname(&longest), Ok(()));
+        assert!(check_nickname(&shortest[1..]).is_err());
+        assert!(check_nickname(&format!("{longest}a")).is_err());
+        assert_eq!(check_nickname("Ellie_Langford-1"), Ok(()));
+        for refused in ["Айзек", "Isaac Clarke", "Isaac\nClarke", ""] {
+            assert!(check_nickname(refused).is_err(), "{refused:?}");
+        }
     }
 
     #[test]
