@@ -10,3 +10,4 @@ pub mod log;
 pub mod models;
 pub mod qos;
 pub mod redirector;
+pub mod server;

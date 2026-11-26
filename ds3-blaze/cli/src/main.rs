@@ -9,21 +9,15 @@
 
 mod proxy;
 
-use ds3_blaze_core::{blaze, log, models, qos, redirector};
+use ds3_blaze_core::log;
+use ds3_blaze_core::server::{
+    self, DEFAULT_BLAZE_PORT, DEFAULT_QOS_HTTP_PORT, DEFAULT_QOS_UDP_PORT, REDIRECTOR_PORT, Server,
+};
 use ds3_blaze_diag::{netcheck, p2pcheck, selftest};
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::process::ExitCode;
-use std::sync::Arc;
 
-/// Port the game's redirector lookup connects to.
-const REDIRECTOR_PORT: u16 = 42127;
-/// Default port of the main Blaze server handed out in the redirect.
-const DEFAULT_BLAZE_PORT: u16 = 42128;
-/// Default QoS HTTP port; EA's QoS servers use the same one.
-const DEFAULT_QOS_HTTP_PORT: u16 = 17502;
-/// Default QoS UDP probe port; EA's QoS servers use the same one.
-const DEFAULT_QOS_UDP_PORT: u16 = 17499;
 /// Display name used when `--name` is not given.
 const DEFAULT_NAME: &str = "DS3Player";
 
@@ -168,39 +162,25 @@ fn parse_selftest(args: &[String]) -> Result<Ipv4Addr, String> {
 async fn serve(args: ServeArgs) -> std::io::Result<()> {
     let path = log::init()?;
     log!("main", "log file: {}", path.display());
-    let instance = redirector::Instance {
-        ip: args.advertise,
-        port: args.blaze_port,
-        secure: false,
-    };
-    let qos_ports = qos::Ports {
-        http: DEFAULT_QOS_HTTP_PORT,
-        udp: DEFAULT_QOS_UDP_PORT,
-    };
-    let config = Arc::new(blaze::Config {
-        advertise: args.advertise,
-        qos: models::QosHttp {
-            host: args.advertise,
-            port: qos_ports.http,
-        },
-        player_name: args.name,
-        player_names: args.players,
-        only_listed: args.only_listed,
-        games: Default::default(),
-    });
     log!(
         "main",
         "advertising {} (Blaze port {}), player name \"{}\"",
         args.advertise,
         args.blaze_port,
-        config.player_name
+        args.name
     );
-    tokio::try_join!(
-        redirector::run(SocketAddr::from((args.bind, REDIRECTOR_PORT)), instance),
-        blaze::run(SocketAddr::from((args.bind, args.blaze_port)), config),
-        qos::run(args.bind, args.advertise, qos_ports),
-    )?;
-    Ok(())
+    let config = server::Config {
+        bind: args.bind,
+        advertise: args.advertise,
+        ports: server::Ports {
+            blaze: args.blaze_port,
+            ..Default::default()
+        },
+        player_name: args.name,
+        player_names: args.players,
+        only_listed: args.only_listed,
+    };
+    Server::start(config).await?.finished().await
 }
 
 #[tokio::main]

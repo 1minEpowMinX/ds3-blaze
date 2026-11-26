@@ -12,6 +12,7 @@ use tdf::{TdfDeserializer, TdfSerialize, TdfSerializer};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
+use tokio_util::sync::CancellationToken;
 
 /// Redirector component id.
 pub const COMPONENT: u16 = 0x5;
@@ -45,17 +46,27 @@ impl TdfSerialize for InstanceResponse {
     }
 }
 
-/// Accepts redirector connections on `bind` until the listener fails.
-pub async fn run(bind: SocketAddr, instance: Instance) -> std::io::Result<()> {
-    let listener = TcpListener::bind(bind).await?;
+/// Accepts redirector connections on `listener` until it fails; each
+/// connection ends when `stop` is cancelled.
+pub async fn serve(
+    listener: TcpListener,
+    instance: Instance,
+    stop: CancellationToken,
+) -> std::io::Result<()> {
     let context = Arc::new(BlazeServerContext::default());
     log!(
         "redirector",
-        "listening on {bind} (SSLv3, bypass certificate)"
+        "listening on {} (SSLv3, bypass certificate)",
+        listener.local_addr()?
     );
     loop {
         let (tcp, peer) = listener.accept().await?;
-        tokio::spawn(handle(tcp, peer, context.clone(), instance));
+        tokio::spawn(stop.clone().run_until_cancelled_owned(handle(
+            tcp,
+            peer,
+            context.clone(),
+            instance,
+        )));
     }
 }
 
