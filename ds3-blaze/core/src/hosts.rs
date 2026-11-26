@@ -41,14 +41,33 @@ pub enum Action {
 }
 
 /// Where the hosts file sends the game.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum State {
-    /// No ds3-blaze entry: the game reaches the EA servers.
+    /// No entry maps a name in [`REDIRECTED`]: the game reaches the EA servers.
     EaServers,
     /// A ds3-blaze entry maps the redirector to this address.
     Redirected(Ipv4Addr),
+    /// An entry outside ds3-blaze's lines comes first for a name in
+    /// [`REDIRECTED`], so Windows uses it.
+    Overridden {
+        /// The entry Windows uses.
+        entry: Entry,
+        /// Address of the ds3-blaze entries, `None` when there are none.
+        ours: Option<Ipv4Addr>,
+    },
     /// The file cannot be read or changed safely.
     Broken(Problem),
+}
+
+/// A line of the hosts file that maps a name in [`REDIRECTED`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    /// Number of the line, counted from 1 as an editor shows it.
+    pub line: usize,
+    /// The line without its leading and trailing white space.
+    pub text: String,
+    /// The IPv4 address the line maps the name to.
+    pub address: Ipv4Addr,
 }
 
 /// Reason the hosts file cannot be changed safely.
@@ -111,7 +130,12 @@ pub fn rewrite(file: &[u8], action: Action) -> Result<Rewritten, Problem> {
     let (text, encoding) = decode(file)?;
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let (lines, final_break) = split_lines(&text);
-    let (mut kept, _) = sort_out(&lines)?;
+    let mut kept: Vec<&str> = lines
+        .iter()
+        .zip(owners(&lines)?)
+        .filter(|&(_, owner)| owner == Owner::Other)
+        .map(|(&line, _)| line)
+        .collect();
     // A backup taken with an entry in it would bring the redirect back when
     // restored, so it holds only the lines that stay.
     let backup = join_lines(&kept, newline, final_break);
@@ -129,19 +153,41 @@ pub fn rewrite(file: &[u8], action: Action) -> Result<Rewritten, Problem> {
 
 /// Returns where `file` sends the game.
 ///
-/// The first ds3-blaze entry that maps a name in [`REDIRECTED`] to an IPv4
-/// address gives the address; ds3-blaze lines without such an entry count as
-/// none.
+/// The first uncommented line that maps a name in [`REDIRECTED`] to an IPv4
+/// address decides, as it does for Windows. A ds3-blaze line gives
+/// [`State::Redirected`]; any other gives [`State::Overridden`] with the
+/// address of the first ds3-blaze entry, wherever it is.
 pub fn state(file: &[u8]) -> State {
-    let found = decode(file).and_then(|(text, _)| {
-        let (lines, _) = split_lines(&text);
-        let (_, entries) = sort_out(&lines)?;
-        Ok(entries.into_iter().find_map(entry_address))
-    });
-    match found {
-        Ok(Some(address)) => State::Redirected(address),
-        Ok(None) => State::EaServers,
-        Err(problem) => State::Broken(problem),
+    let (text, _) = match decode(file) {
+        Ok(decoded) => decoded,
+        Err(problem) => return State::Broken(problem),
+    };
+    let (lines, _) = split_lines(&text);
+    let owners = match owners(&lines) {
+        Ok(owners) => owners,
+        Err(problem) => return State::Broken(problem),
+    };
+    let entries = || {
+        lines
+            .iter()
+            .zip(&owners)
+            .enumerate()
+            .filter_map(|(index, (line, owner))| Some((index, *line, *owner, entry_address(line)?)))
+    };
+    let ours = entries()
+        .find(|&(_, _, owner, _)| owner == Owner::Ds3Blaze)
+        .map(|(_, _, _, address)| address);
+    match entries().next() {
+        None => State::EaServers,
+        Some((_, _, Owner::Ds3Blaze, address)) => State::Redirected(address),
+        Some((index, line, _, address)) => State::Overridden {
+            entry: Entry {
+                line: index + 1,
+                text: line.trim().to_string(),
+                address,
+            },
+            ours,
+        },
     }
 }
 
@@ -236,38 +282,49 @@ fn entry_address(line: &str) -> Option<Ipv4Addr> {
         .then_some(address)
 }
 
-/// Splits `lines` into the lines that are not ds3-blaze's and the entries that
-/// are, without the section's own markers.
+/// Whose a line of the hosts file is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    /// A line ds3-blaze did not write.
+    Other,
+    /// [`BEGIN_LINE`] or [`END_LINE`].
+    Marker,
+    /// A line inside the section or one ending with [`LEGACY_MARKER`].
+    Ds3Blaze,
+}
+
+/// Returns the owner of each of `lines`, in the same order.
 ///
 /// # Errors
 ///
 /// Returns [`Problem::Unterminated`] when a section has no end line.
-fn sort_out<'a>(lines: &[&'a str]) -> Result<(Vec<&'a str>, Vec<&'a str>), Problem> {
-    let mut kept = Vec::new();
-    let mut entries = Vec::new();
+fn owners(lines: &[&str]) -> Result<Vec<Owner>, Problem> {
+    let mut owners = Vec::with_capacity(lines.len());
     let mut in_section = false;
     for &line in lines {
         let trimmed = line.trim();
-        if in_section {
+        owners.push(if in_section {
             if trimmed == END_LINE {
                 in_section = false;
+                Owner::Marker
             } else {
-                entries.push(line);
+                Owner::Ds3Blaze
             }
         } else if trimmed == BEGIN_LINE {
             in_section = true;
+            Owner::Marker
         } else if line.ends_with(LEGACY_MARKER) {
-            entries.push(line);
+            Owner::Ds3Blaze
         } else {
-            kept.push(line);
-        }
+            Owner::Other
+        });
     }
     // Guessing where a section without an end line stops could delete the
     // player's own entries.
     if in_section {
         return Err(Problem::Unterminated);
     }
-    Ok((kept, entries))
+    Ok(owners)
 }
 
 /// Returns the lines of `text` without their CRLF or LF breaks, and whether the
@@ -515,13 +572,78 @@ mod tests {
     }
 
     #[test]
-    fn commented_and_foreign_entries_are_not_redirects() {
+    fn commented_lines_and_empty_sections_are_not_entries() {
         assert_eq!(
             state(b"# 26.1.2.3 gosredirector.ea.com\n"),
             State::EaServers
         );
-        assert_eq!(state(b"26.1.2.3 gosredirector.ea.com\n"), State::EaServers);
         let empty_section = format!("{BEGIN_LINE}\n{END_LINE}\n");
         assert_eq!(state(empty_section.as_bytes()), State::EaServers);
+    }
+
+    const FOREIGN: &str = "10.0.0.9 gosredirector.ea.com";
+    const FOREIGN_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 9);
+
+    fn foreign_on_line(line: usize) -> Entry {
+        Entry {
+            line,
+            text: FOREIGN.into(),
+            address: FOREIGN_ADDRESS,
+        }
+    }
+
+    #[test]
+    fn foreign_entry_before_the_section_overrides_it() {
+        for newline in ["\n", "\r\n"] {
+            let file = format!(
+                "127.0.0.1 localhost{newline}  {FOREIGN}  {newline}{}",
+                section_text(HOST, newline)
+            );
+            assert_eq!(
+                state(file.as_bytes()),
+                State::Overridden {
+                    entry: foreign_on_line(2),
+                    ours: Some(HOST)
+                },
+                "{newline:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn foreign_entry_after_the_section_decides_once_the_section_is_gone() {
+        let file = format!(
+            "127.0.0.1 localhost\n{}{FOREIGN}\n",
+            section_text(HOST, "\n")
+        );
+        assert_eq!(state(file.as_bytes()), State::Redirected(HOST));
+        assert_eq!(
+            state(&disable(file.as_bytes()).updated),
+            State::Overridden {
+                entry: foreign_on_line(2),
+                ours: None
+            }
+        );
+    }
+
+    #[test]
+    fn foreign_entry_without_a_section_overrides_the_ea_servers() {
+        assert_eq!(
+            state(format!("# {FOREIGN}\n{FOREIGN} # mine\n").as_bytes()),
+            State::Overridden {
+                entry: Entry {
+                    line: 2,
+                    text: format!("{FOREIGN} # mine"),
+                    address: FOREIGN_ADDRESS,
+                },
+                ours: None
+            }
+        );
+    }
+
+    #[test]
+    fn commented_foreign_entry_before_the_section_has_no_effect() {
+        let file = format!("# {FOREIGN}\n{}", section_text(HOST, "\n"));
+        assert_eq!(state(file.as_bytes()), State::Redirected(HOST));
     }
 }

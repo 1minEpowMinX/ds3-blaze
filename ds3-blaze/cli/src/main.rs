@@ -182,19 +182,37 @@ async fn serve(args: ServeArgs) -> io::Result<()> {
     Server::start(config).await?.finished().await
 }
 
+/// Returns what `state` means for the game, or its problem as an error.
+fn describe(state: State) -> io::Result<String> {
+    Ok(match state {
+        State::EaServers => "the game reaches the EA servers".into(),
+        State::Redirected(address) => {
+            format!("the game reaches the ds3-blaze server at {address}")
+        }
+        State::Overridden { entry, ours } => {
+            let instead = match ours {
+                Some(ours) => format!("the ds3-blaze server at {ours}"),
+                None => "the EA servers".into(),
+            };
+            format!(
+                "line {} of {}, \"{}\", sends the game to {} instead of {instead}; remove that line",
+                entry.line,
+                hosts::path().display(),
+                entry.text,
+                entry.address
+            )
+        }
+        State::Broken(problem) => return Err(io::Error::other(problem)),
+    })
+}
+
 /// Runs a `hosts` subcommand.
 fn hosts(command: HostsCommand) -> io::Result<()> {
     let action = match command {
         HostsCommand::Enable { address } => Action::Enable(address),
         HostsCommand::Disable => Action::Disable,
         HostsCommand::Status => {
-            match hosts::status()? {
-                State::EaServers => println!("the game reaches the EA servers"),
-                State::Redirected(address) => {
-                    println!("the game reaches the ds3-blaze server at {address}")
-                }
-                State::Broken(problem) => return Err(io::Error::other(problem)),
-            }
+            println!("{}", describe(hosts::status()?)?);
             return Ok(());
         }
     };
@@ -213,6 +231,11 @@ fn hosts(command: HostsCommand) -> io::Result<()> {
         eprintln!(
             "warning: {err}; the game may keep the old address until the DNS cache              expires or Windows restarts"
         );
+    }
+    // An entry outside the section that comes first still wins after the write.
+    if let Ok(state @ State::Overridden { .. }) = hosts::status() {
+        eprintln!("warning: {}", describe(state)?);
+        return Ok(());
     }
     match action {
         Action::Enable(address) => println!(
