@@ -7,6 +7,7 @@ pub mod components;
 pub mod event;
 pub mod fire;
 pub mod game;
+pub mod hosts;
 pub mod log;
 pub mod models;
 pub mod players;

@@ -12,12 +12,18 @@ publish.workspace = true
 name = "ds3-blaze"
 path = "src/main.rs"
 
+[features]
+# The proxy and ea-check commands, for protocol research; release builds leave
+# them out.
+research = ["dep:blaze-ssl-async", "dep:tdf", "dep:bytes", "dep:tokio-util", "dep:futures"]
+
 [dependencies]
 ds3-blaze-core = { path = "../core" }
 ds3-blaze-diag = { path = "../diag" }
-blaze-ssl-async.workspace = true
-tdf.workspace = true
-bytes.workspace = true
+clap.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
-futures.workspace = true
+blaze-ssl-async = { workspace = true, optional = true }
+tdf = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }

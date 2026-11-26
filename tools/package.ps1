@@ -57,7 +57,6 @@ if (-not (Test-Path $exe)) { throw "$exe not found; build without -SkipBuild" }
 
 $entries = [ordered]@{
     "$bin.exe"             = $exe
-    'scripts/hosts.ps1'    = Join-Path $Root 'ds3-blaze\scripts\hosts.ps1'
     'README.md'            = Join-Path $Root 'README.md'
     'LICENSE'              = Join-Path $Root 'LICENSE'
 }

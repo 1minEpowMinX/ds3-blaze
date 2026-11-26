@@ -19,7 +19,7 @@ Protocol analysis, traffic captures and the work plan: [docs/](docs/README.md).
 
 ## Getting it
 
-Release archives are on the repository's Releases page. Each holds `ds3-blaze.exe`, `scripts\hosts.ps1`, this README and the license; the commands below run from the unpacked folder.
+Release archives are on the repository's Releases page. Each holds `ds3-blaze.exe`, this README and the license; the commands below run from the unpacked folder.
 
 GitHub Actions builds every release archive and signs a build provenance attestation for it and for the `ds3-blaze.exe` inside. With the [GitHub CLI](https://cli.github.com/) installed, either file can be checked against this repository's release workflow; the command fails for a file that workflow did not produce:
 
@@ -33,7 +33,7 @@ To build from source instead, install stable Rust on Windows (`net-check` reads 
 powershell -ExecutionPolicy Bypass -File .\tools\package.ps1
 ```
 
-Running `ds3-blaze.exe` without arguments prints its commands and their options.
+`.\ds3-blaze.exe --help` lists the commands, and `.\ds3-blaze.exe <command> --help` the options of one.
 
 ## Running
 
@@ -57,10 +57,10 @@ The server runs on the host's PC.
 
    On a VPN network open to strangers, add `--only-listed`: the server then accepts only your own PC and the `--player` addresses.
 
-2. Point `gosredirector.ea.com` at your own PC from an elevated PowerShell:
+2. Point `gosredirector.ea.com` at your own PC from a PowerShell run as administrator, in the same folder:
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\hosts.ps1 -Enable
+   .\ds3-blaze.exe hosts enable
    ```
 
 3. Start the game, go online in co-op and create a game. A **public** game takes the guest through quick match; a private one takes invites only, so invite the guest through the EA App from inside it.
@@ -69,10 +69,10 @@ If the guest does not get in, the `logs\` folder shows how far the server got. T
 
 ### Guest
 
-1. Point `gosredirector.ea.com` at the host from an elevated PowerShell:
+1. Point `gosredirector.ea.com` at the host from a PowerShell run as administrator, in the unpacked folder:
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\hosts.ps1 -Enable -Address <host's VPN address>
+   .\ds3-blaze.exe hosts enable --address <host's VPN address>
    ```
 
 2. Start the game and go online in co-op. Then either:
@@ -82,7 +82,13 @@ If the guest does not get in, the `logs\` folder shows how far the server got. T
 
 ### Afterwards
 
-Both players run `hosts.ps1 -Disable` to go back to the EA servers. Each run of the script first saves the hosts file as it was, minus any ds3-blaze entries, to `hosts.ds3-blaze.bak` beside it; restoring that copy also returns to the EA servers.
+Both players go back to the EA servers from a PowerShell run as administrator:
+
+```powershell
+.\ds3-blaze.exe hosts disable
+```
+
+`.\ds3-blaze.exe hosts status` tells which servers the game reaches, and needs no administrator rights. Each `enable` and `disable` first saves the hosts file as it was, minus any ds3-blaze entries, to `hosts.ds3-blaze.bak` beside it; restoring that copy also returns to the EA servers.
 
 ## Logs and privacy
 
@@ -94,7 +100,13 @@ When a player logs in, the game sends the server the EA login token it got from 
 
 Each feature or fix is developed on its own branch named `<type>/<name>`, where `<type>` is one of the commit types below, and lands on `main` through a merge (`git merge --no-ff`); nothing is committed to `main` directly.
 
-CI on GitHub Actions checks every push to any branch and every pull request into `main`: `tools\check-commits.ps1` over the branch name and the subjects of the commits the branch adds, `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with warnings as errors, a build and the tests, among them a protocol test that runs the game's client sequence against a server started inside the test. A newer push to the same branch cancels the check still running for it. Pushing an annotated tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive, attests its build provenance and opens a draft release. Its notes are rendered by [git-cliff](https://git-cliff.org) from `cliff.toml`: the tag's message comes first as the summary, followed by the commits since the previous tag. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), with the types listed in `$Types` of `tools\check-commits.ps1`; a `Deploy:` trailer lands under "Action required" in the notes. With git-cliff installed, `git cliff --unreleased` previews the next release's notes.
+CI on GitHub Actions checks every push to any branch and every pull request into `main`: `tools\check-commits.ps1` over the branch name and the subjects of the commits the branch adds, `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with every feature on and warnings as errors, a build and the tests, among them a protocol test that runs the game's client sequence against a server started inside the test. A newer push to the same branch cancels the check still running for it. Pushing an annotated tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive, attests its build provenance and opens a draft release. Its notes are rendered by [git-cliff](https://git-cliff.org) from `cliff.toml`: the tag's message comes first as the summary, followed by the commits since the previous tag. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), with the types listed in `$Types` of `tools\check-commits.ps1`; a `Deploy:` trailer lands under "Action required" in the notes. With git-cliff installed, `git cliff --unreleased` previews the next release's notes.
+
+The `proxy` and `ea-check` commands, used for protocol research, exist only in a build with the `research` feature, which release archives leave out:
+
+```powershell
+cargo build --features research --manifest-path ds3-blaze\Cargo.toml
+```
 
 The same checks run locally once the hooks are enabled in a clone: the repository check before each commit, and the naming check on each commit message, which also refuses a commit on `main` other than one that concludes a merge:
 
