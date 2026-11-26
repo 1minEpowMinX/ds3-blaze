@@ -29,7 +29,7 @@ The players' executable is the GUI, so it takes the name players already know, `
 
 The GUI renders from `ServerHandle::snapshot()`: sessions with address, name and login state, refused addresses, and rooms with their state, members and the chapter and restore point read from `GAME_CHECKPOINT`. The snapshot is the source of truth for what the window shows, so a missed event never leaves the window wrong.
 
-Events go out on a `tokio::sync::broadcast` channel. They carry log lines (`Event::Log { tag, text }`) and notices that state changed, which make the GUI repaint. `log!` keeps writing the session file under `logs/`; the core no longer prints to stdout. The CLI subscribes to the channel and prints log lines, which keeps today's console output.
+Events go out on a `tokio::sync::broadcast` channel, one per process like the log file. They carry log lines (`Event::Log` with the time, tag and text) and notices that state changed, which make the GUI repaint. `log!` keeps writing the session file under `logs/`; the core no longer prints to stdout. The CLI subscribes to the channel and prints log lines, which keeps today's console output.
 
 ### Player book
 

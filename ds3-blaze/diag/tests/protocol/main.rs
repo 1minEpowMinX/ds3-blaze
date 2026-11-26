@@ -2,6 +2,7 @@
 
 mod client;
 
+use ds3_blaze_core::players::Roster;
 use ds3_blaze_core::server::{Config, Ports, Server};
 use std::net::Ipv4Addr;
 
@@ -11,9 +12,10 @@ async fn client_sequence_passes() {
         bind: Ipv4Addr::LOCALHOST,
         advertise: Ipv4Addr::LOCALHOST,
         ports: Ports::ANY,
-        player_name: "Host".into(),
-        player_names: Vec::new(),
-        only_listed: false,
+        players: Roster {
+            own_name: "Host".into(),
+            ..Default::default()
+        },
     })
     .await
     .expect("the server starts");

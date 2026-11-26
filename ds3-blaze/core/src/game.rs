@@ -9,6 +9,7 @@
 use crate::components::{game_manager as gm, user_sessions as us};
 use crate::fire::Frame;
 use crate::models::{self, NetData, Player};
+use crate::snapshot::{self, Checkpoint, RoomState};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tdf::prelude::{
@@ -16,6 +17,19 @@ use tdf::prelude::{
     TdfSerializer, TdfType, TdfTyped,
 };
 use tokio::sync::mpsc::UnboundedSender;
+
+/// Game attribute holding the chapter and restore point.
+const CHECKPOINT_ATTRIBUTE: &str = "GAME_CHECKPOINT";
+
+/// Returns the snapshot's name for game state `state`.
+fn room_state(state: u8) -> RoomState {
+    match state {
+        STATE_INITIALIZING => RoomState::Initializing,
+        STATE_PRE_GAME => RoomState::PreGame,
+        STATE_IN_GAME => RoomState::InGame,
+        other => RoomState::Other(other),
+    }
+}
 
 /// Game state the server assigns to a new game (`INITIALIZING`).
 const STATE_INITIALIZING: u8 = 0x1;
@@ -193,7 +207,7 @@ struct User {
 }
 
 /// How a member came to receive `GameSetup` (`REAS`).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SetupReason {
     /// The member created the game.
     Create,
@@ -215,11 +229,14 @@ struct GamePlayer {
     attributes: Vec<(String, String)>,
     /// Join time in microseconds since the Unix epoch (`TIME`).
     joined: u64,
+    /// How the member entered the game.
+    reason: SetupReason,
 }
 
 impl GamePlayer {
-    /// Returns `user` as a member in player state `state` and slot type `slot_type`.
-    fn new(user: &User, state: u8, slot_type: u8) -> Self {
+    /// Returns `user` as a member in player state `state` and slot type
+    /// `slot_type`, entered through `reason`.
+    fn new(user: &User, state: u8, slot_type: u8, reason: SetupReason) -> Self {
         let joined = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
@@ -232,6 +249,7 @@ impl GamePlayer {
             tx: user.tx.clone(),
             attributes: Vec::new(),
             joined,
+            reason,
         }
     }
 
@@ -437,6 +455,7 @@ impl Games {
             self.users.get(&host_id)?,
             PLAYER_ACTIVE_CONNECTED,
             SLOT_PUBLIC_PARTICIPANT,
+            SetupReason::Create,
         );
         self.next_id += 1;
         let id = self.next_id;
@@ -558,6 +577,38 @@ impl Games {
             .map(|user| user.player.name.as_str())
     }
 
+    /// Returns every game as the snapshot shows it, by id.
+    pub fn rooms(&self) -> Vec<snapshot::Room> {
+        let mut rooms: Vec<snapshot::Room> = self
+            .games
+            .values()
+            .map(|game| snapshot::Room {
+                id: game.id,
+                name: game.request.name.clone(),
+                state: room_state(game.state),
+                open_to_matchmaking: game.settings & SETTING_OPEN_TO_MATCHMAKING != 0,
+                capacity: game.capacity(),
+                members: game
+                    .players
+                    .iter()
+                    .map(|member| snapshot::Member {
+                        player_id: member.player.id,
+                        name: member.player.name.clone(),
+                        connected: member.state == PLAYER_ACTIVE_CONNECTED,
+                        joined_by: member.reason,
+                    })
+                    .collect(),
+                checkpoint: game
+                    .attributes
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(CHECKPOINT_ATTRIBUTE))
+                    .and_then(|(_, value)| Checkpoint::parse(value)),
+            })
+            .collect();
+        rooms.sort_by_key(|room| room.id);
+        rooms
+    }
+
     /// Returns whether game `id` exists.
     pub fn contains(&self, id: u32) -> bool {
         self.games.contains_key(&id)
@@ -626,7 +677,7 @@ impl Games {
         if game.players.len() >= game.capacity() {
             return Err(ERR_GAME_FULL);
         }
-        let newcomer = GamePlayer::new(user, PLAYER_ACTIVE_CONNECTING, slot_type);
+        let newcomer = GamePlayer::new(user, PLAYER_ACTIVE_CONNECTING, slot_type, reason);
         let subscribed = models::USER_SUBSCRIBED | models::USER_ONLINE;
         for member in &game.players {
             let added = models::UserAdded {
@@ -1283,6 +1334,53 @@ mod tests {
             .filter(|(_, f)| f.header.component == gm::COMPONENT)
             .map(|(_, f)| f.header.command)
             .collect()
+    }
+
+    #[test]
+    fn rooms_show_state_members_and_checkpoint() {
+        let (mut games, ticket, host) = host_and_guest();
+        let mut out = Outbox::default();
+        games.set_attributes(
+            ticket.game_id,
+            vec![(
+                "GAME_CHECKPOINT".into(),
+                "000000040000000BX_0000000_0000000_v3".into(),
+            )],
+            &mut out,
+        );
+        let rooms = games.rooms();
+        assert_eq!(rooms.len(), 1);
+        let room = &rooms[0];
+        assert_eq!(room.id, ticket.game_id);
+        assert_eq!(room.name, "room");
+        assert_eq!(room.state, RoomState::PreGame);
+        assert!(room.open_to_matchmaking);
+        assert_eq!(room.capacity, 2);
+        assert_eq!(
+            room.checkpoint,
+            Some(Checkpoint {
+                chapter: 4,
+                restore_point: 11
+            })
+        );
+        let members: Vec<_> = room
+            .members
+            .iter()
+            .map(|m| (m.player_id, m.name.as_str(), m.connected, m.joined_by))
+            .collect();
+        assert_eq!(
+            members,
+            [
+                (host, "host", true, SetupReason::Create),
+                (ticket.player_id, "guest", false, SetupReason::Join),
+            ]
+        );
+    }
+
+    #[test]
+    fn rooms_without_checkpoint_have_none() {
+        let (games, _, _) = host_and_guest();
+        assert_eq!(games.rooms()[0].checkpoint, None);
     }
 
     #[test]

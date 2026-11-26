@@ -8,11 +8,15 @@ use crate::components::{
     association_lists as assoc, authentication as auth, game_manager as gm, user_sessions as us,
     util,
 };
+use crate::event;
 use crate::fire::{FireCodec, Frame, FrameType};
 use crate::game::{self, Games, Outbox};
 use crate::log;
 use crate::models::{self, NetData, Player, QosHttp};
+use crate::players::PlayerBook;
+use crate::snapshot::{self, Snapshot};
 use futures::{SinkExt, StreamExt};
+use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -30,41 +34,63 @@ pub struct Config {
     /// Address the client is told to reach this machine at (telemetry, ticker, QoS).
     pub advertise: Ipv4Addr,
     pub qos: QosHttp,
-    /// Display name of a player connecting from this machine or from `advertise`.
-    pub player_name: String,
-    /// Display names of players connecting from other addresses.
-    pub player_names: Vec<(Ipv4Addr, String)>,
-    /// Whether connections are accepted only from addresses [`Config::admits`] lists.
-    pub only_listed: bool,
+    /// Names and admission rules, read at each connection and login.
+    pub players: Arc<PlayerBook>,
     pub games: Mutex<Games>,
+    pub connections: Mutex<Connections>,
+}
+
+/// Open sessions and refused addresses of a server.
+#[derive(Default)]
+pub struct Connections {
+    /// Open sessions by session id.
+    open: BTreeMap<u32, OpenSession>,
+    /// Refused addresses in the order of their first refusal, each once.
+    refused: Vec<Ipv4Addr>,
+}
+
+/// Address and logged-in player of an open session.
+struct OpenSession {
+    address: Ipv4Addr,
+    /// Id and name of the logged-in player.
+    player: Option<(u32, String)>,
+}
+
+/// Returns the sessions, refused addresses, rooms and player book of the
+/// server `config` belongs to.
+pub fn snapshot(config: &Config) -> Snapshot {
+    let (sessions, refused) = {
+        let connections = unpoisoned(&config.connections);
+        let sessions = connections
+            .open
+            .iter()
+            .map(|(&id, open)| snapshot::Session {
+                id,
+                address: open.address,
+                name: match &open.player {
+                    Some((_, name)) => name.clone(),
+                    None => config.players.name_for(open.address),
+                },
+                player_id: open.player.as_ref().map(|(player_id, _)| *player_id),
+            })
+            .collect();
+        let refused = connections
+            .refused
+            .iter()
+            .copied()
+            .filter(|&ip| !config.players.admits(ip))
+            .collect();
+        (sessions, refused)
+    };
+    Snapshot {
+        sessions,
+        refused,
+        rooms: lock_games(config).rooms(),
+        roster: config.players.roster(),
+    }
 }
 
 impl Config {
-    /// Returns whether a connection from `ip` may open a session: always without
-    /// `only_listed`, otherwise only from this machine, `advertise` or an address
-    /// in `player_names`.
-    fn admits(&self, ip: Ipv4Addr) -> bool {
-        !self.only_listed
-            || ip.is_loopback()
-            || ip == self.advertise
-            || self.player_names.iter().any(|(addr, _)| *addr == ip)
-    }
-
-    /// Returns the display name of a player connecting from `ip`.
-    ///
-    /// Addresses listed in `player_names` get their entry; this machine and
-    /// `advertise` get `player_name`; any other address gets `Player-` followed by
-    /// its last octet.
-    fn name_for(&self, ip: Ipv4Addr) -> String {
-        if let Some((_, name)) = self.player_names.iter().find(|(addr, _)| *addr == ip) {
-            return name.clone();
-        }
-        if ip.is_loopback() || ip == self.advertise {
-            return self.player_name.clone();
-        }
-        format!("Player-{}", ip.octets()[3])
-    }
-
     /// Returns the address other players reach a client connected from `ip` at:
     /// `advertise` for this machine, `ip` otherwise.
     fn reachable_ip(&self, ip: Ipv4Addr) -> Ipv4Addr {
@@ -85,7 +111,7 @@ pub async fn serve(
         "listening on {} (plain TCP)",
         listener.local_addr()?
     );
-    if config.only_listed {
+    if config.players.roster().only_allowed {
         log!(
             "blaze",
             "accepting only this machine, {} and the --player addresses",
@@ -95,7 +121,7 @@ pub async fn serve(
     let next_id = Arc::new(AtomicU32::new(1));
     loop {
         let (tcp, peer) = listener.accept().await?;
-        if !config.admits(peer_ipv4(peer)) {
+        if !admit(&config, peer_ipv4(peer)) {
             log!("blaze", "{peer}: refused, address not listed");
             continue;
         }
@@ -105,12 +131,30 @@ pub async fn serve(
             peer,
             id,
             config.clone(),
+            stop.clone(),
         )));
     }
 }
 
+/// Returns whether the player book admits a connection from `ip`, recording
+/// `ip` among the refused addresses when it does not.
+fn admit(config: &Config, ip: Ipv4Addr) -> bool {
+    if config.players.admits(ip) {
+        return true;
+    }
+    let mut connections = unpoisoned(&config.connections);
+    if !connections.refused.contains(&ip) {
+        connections.refused.push(ip);
+    }
+    drop(connections);
+    event::changed();
+    false
+}
+
 /// State of one client connection.
 struct Session {
+    /// Session id, as in the log tag and the snapshot.
+    id: u32,
     tag: String,
     /// IPv4 address the connection comes from (IPv4-mapped form for IPv6).
     peer_ip: Ipv4Addr,
@@ -130,18 +174,29 @@ struct Session {
 }
 
 impl Drop for Session {
-    /// Stops matchmaking, removes the session's player from every game it is in
-    /// and logs it out.
+    /// Stops matchmaking, removes the session's player from every game it is in,
+    /// logs it out and removes the session from the open ones.
     fn drop(&mut self) {
         self.stop_matchmaking();
         self.log_out();
+        unpoisoned(&self.config.connections).open.remove(&self.id);
+        event::changed();
     }
 }
 
 /// Serves one client connection over `io` until the client closes it, a read
-/// fails or the client stays silent longer than [`IDLE_TIMEOUT`].
-async fn serve_session<S>(io: S, peer: SocketAddr, id: u32, config: Arc<Config>)
-where
+/// fails, the client stays silent longer than [`IDLE_TIMEOUT`] or `stop` is
+/// cancelled.
+///
+/// The connection's session id is `id`; `stop` also ends the task that writes
+/// to `io`, which closes the connection.
+async fn serve_session<S>(
+    io: S,
+    peer: SocketAddr,
+    id: u32,
+    config: Arc<Config>,
+    stop: CancellationToken,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let tag = format!("blaze#{id}");
@@ -150,7 +205,9 @@ where
     let (tx, mut rx) = mpsc::unbounded_channel::<Frame>();
 
     let writer_tag = tag.clone();
-    let writer = tokio::spawn(async move {
+    // The writer otherwise ends only once no sender is left; the token closes
+    // the connection at a stop whatever still holds one.
+    let writer = tokio::spawn(stop.run_until_cancelled_owned(async move {
         while let Some(frame) = rx.recv().await {
             log!(&writer_tag, "-> {frame}");
             if let Err(err) = sink.send(frame).await {
@@ -158,9 +215,10 @@ where
                 return;
             }
         }
-    });
+    }));
 
     let mut session = Session {
+        id,
         tag: tag.clone(),
         peer_ip: peer_ipv4(peer),
         config,
@@ -173,6 +231,7 @@ where
         matchmaking: None,
         ping_grace: Duration::ZERO,
     };
+    session.record_player();
     let mut idle = false;
     loop {
         // A grace period covers only the wait that follows the request granting it.
@@ -192,6 +251,7 @@ where
                     // that caused them; GameSetup ahead of the createGame response
                     // makes the game abandon the new game.
                     std::mem::take(&mut session.outbox).flush();
+                    event::changed();
                 }
             }
             Some(Err(err)) => {
@@ -348,7 +408,7 @@ impl Session {
                 self.log_out();
                 let player = self
                     .games()
-                    .unique_player(&self.config.name_for(self.peer_ip), self.locale);
+                    .unique_player(&self.config.players.name_for(self.peer_ip), self.locale);
                 log!(
                     &self.tag,
                     "login accepted without verification: \"{}\" id={}",
@@ -382,6 +442,7 @@ impl Session {
                 self.games()
                     .log_in(player.clone(), self.net.clone(), self.tx.clone());
                 self.player = Some(player);
+                self.record_player();
                 reply
             }
             (auth::COMPONENT, auth::LOGIN_PERSONA) => match &self.player {
@@ -797,11 +858,23 @@ impl Session {
         }
     }
 
+    /// Stores the session's address and logged-in player among the open sessions.
+    fn record_player(&self) {
+        let open = OpenSession {
+            address: self.peer_ip,
+            player: self.player.as_ref().map(|p| (p.id, p.name.clone())),
+        };
+        unpoisoned(&self.config.connections)
+            .open
+            .insert(self.id, open);
+    }
+
     /// Removes the session's player from every game and from the logged-in users.
     fn log_out(&mut self) {
         let Some(player) = self.player.take() else {
             return;
         };
+        self.record_player();
         let mut out = Outbox::default();
         let mut games = self.games();
         games.leave_all(player.id, &mut out);
@@ -886,6 +959,7 @@ impl Session {
                         "matchmaking session {session_id} joined game {}",
                         ticket.game_id
                     );
+                    event::changed();
                     watch_join(config, tag, ticket);
                     return;
                 }
@@ -921,9 +995,13 @@ fn peer_ipv4(peer: SocketAddr) -> Ipv4Addr {
 
 /// Returns the server's games, locked.
 fn lock_games(config: &Config) -> MutexGuard<'_, Games> {
+    unpoisoned(&config.games)
+}
+
+/// Returns `mutex` locked, also after a panic of a previous holder.
+fn unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     // A panic while holding the lock leaves plain data behind; keep serving it.
-    config
-        .games
+    mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -937,6 +1015,7 @@ fn watch_join(config: Arc<Config>, tag: String, ticket: game::JoinTicket) {
         let expired = lock_games(&config).expire_join(&ticket, &mut out);
         out.flush();
         if expired {
+            event::changed();
             log!(
                 &tag,
                 "player {} removed from game {}: no mesh connection within {} s",
@@ -991,32 +1070,24 @@ fn read<T>(
 mod tests {
     use super::*;
 
-    fn config(only_listed: bool) -> Config {
+    fn config() -> Config {
+        let advertise = Ipv4Addr::new(26, 0, 0, 1);
         Config {
-            advertise: Ipv4Addr::new(26, 0, 0, 1),
+            advertise,
             qos: QosHttp {
                 host: Ipv4Addr::LOCALHOST,
                 port: 0,
             },
-            player_name: "host".into(),
-            player_names: vec![(Ipv4Addr::new(26, 0, 0, 2), "guest".into())],
-            only_listed,
+            players: Arc::new(PlayerBook::new(
+                advertise,
+                crate::players::Roster {
+                    own_name: "host".into(),
+                    ..Default::default()
+                },
+            )),
             games: Default::default(),
+            connections: Default::default(),
         }
-    }
-
-    #[test]
-    fn only_listed_admits_this_machine_and_listed_players() {
-        let config = config(true);
-        assert!(config.admits(Ipv4Addr::LOCALHOST));
-        assert!(config.admits(Ipv4Addr::new(26, 0, 0, 1)));
-        assert!(config.admits(Ipv4Addr::new(26, 0, 0, 2)));
-        assert!(!config.admits(Ipv4Addr::new(26, 0, 0, 3)));
-    }
-
-    #[test]
-    fn without_only_listed_every_address_is_admitted() {
-        assert!(config(false).admits(Ipv4Addr::new(26, 0, 0, 3)));
     }
 
     /// `suspendUserPing` body.
@@ -1036,21 +1107,43 @@ mod tests {
 
     impl Client {
         fn connect() -> Client {
+            Client::connect_to(&Arc::new(config()), 1)
+        }
+
+        /// Opens session `id` from this machine on the server `config` belongs to.
+        fn connect_to(config: &Arc<Config>, id: u32) -> Client {
             let (client, server) = tokio::io::duplex(64 * 1024);
             let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 1));
-            tokio::spawn(serve_session(server, peer, 1, Arc::new(config(false))));
+            tokio::spawn(serve_session(
+                server,
+                peer,
+                id,
+                config.clone(),
+                CancellationToken::new(),
+            ));
             Client {
                 framed: Framed::new(client, FireCodec::default()),
                 seq: 0,
             }
         }
 
-        /// Sends a request and returns the server's reply.
+        /// Sends a Util request and returns the server's reply.
         async fn request<V: TdfSerialize>(&mut self, command: u16, value: V) -> Frame {
+            self.call(util::COMPONENT, command, value).await
+        }
+
+        /// Sends a request and returns the server's reply, skipping the
+        /// notifications sent ahead of it.
+        async fn call<V: TdfSerialize>(&mut self, component: u16, command: u16, value: V) -> Frame {
             self.seq += 1;
-            let frame = Frame::request(self.seq, util::COMPONENT, command, value);
+            let frame = Frame::request(self.seq, component, command, value);
             self.framed.send(frame).await.expect("send");
-            self.framed.next().await.expect("reply").expect("frame")
+            loop {
+                let frame = self.framed.next().await.expect("reply").expect("frame");
+                if frame.header.ty != FrameType::Notify {
+                    return frame;
+                }
+            }
         }
 
         /// Waits for the server to close the connection.
@@ -1067,6 +1160,69 @@ mod tests {
 
     impl TdfSerialize for Empty {
         fn serialize<S: tdf::prelude::TdfSerializer>(&self, _: &mut S) {}
+    }
+
+    /// Returns the id, name and login state of every session in the snapshot.
+    fn sessions(config: &Config) -> Vec<(u32, String, bool)> {
+        snapshot(config)
+            .sessions
+            .into_iter()
+            .map(|s| (s.id, s.name, s.player_id.is_some()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn snapshot_names_sessions_by_book_until_login() {
+        let config = Arc::new(config());
+        let mut first = Client::connect_to(&config, 1);
+        first.call(auth::COMPONENT, auth::SILENT_LOGIN, Empty).await;
+        config
+            .players
+            .set_name(Ipv4Addr::LOCALHOST, Some("renamed".into()));
+        let mut second = Client::connect_to(&config, 2);
+        second.request(util::PING, Empty).await;
+        assert_eq!(
+            sessions(&config),
+            [(1, "host".into(), true), (2, "renamed".into(), false)]
+        );
+
+        second
+            .call(auth::COMPONENT, auth::SILENT_LOGIN, Empty)
+            .await;
+        assert_eq!(
+            sessions(&config),
+            [(1, "host".into(), true), (2, "renamed".into(), true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_session_leaves_the_snapshot() {
+        let config = Arc::new(config());
+        let mut client = Client::connect_to(&config, 1);
+        client.request(util::PING, Empty).await;
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !sessions(&config).is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the session ends");
+    }
+
+    #[test]
+    fn refused_address_is_listed_once_until_allowed() {
+        let config = config();
+        config.players.set_only_allowed(true);
+        let stranger = Ipv4Addr::new(26, 0, 0, 3);
+        assert!(!admit(&config, stranger));
+        assert!(!admit(&config, stranger));
+        assert!(admit(&config, Ipv4Addr::LOCALHOST));
+        assert_eq!(snapshot(&config).refused, [stranger]);
+
+        config.players.set_allowed(stranger, true);
+        assert!(snapshot(&config).refused.is_empty());
+        assert!(admit(&config, stranger));
     }
 
     #[tokio::test(start_paused = true)]

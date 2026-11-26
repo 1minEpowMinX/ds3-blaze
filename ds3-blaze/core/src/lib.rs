@@ -4,10 +4,13 @@
 
 pub mod blaze;
 pub mod components;
+pub mod event;
 pub mod fire;
 pub mod game;
 pub mod log;
 pub mod models;
+pub mod players;
 pub mod qos;
 pub mod redirector;
 pub mod server;
+pub mod snapshot;
