@@ -294,6 +294,7 @@ dependencies = [
  "tdf",
  "tokio",
  "tokio-util",
+ "windows-sys",
 ]
 
 [[package]]

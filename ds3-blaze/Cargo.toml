@@ -18,6 +18,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
+windows-sys = "0.61"
 
 [profile.release]
 # Symbols are stripped from the exe; the MSVC linker still writes a .pdb beside

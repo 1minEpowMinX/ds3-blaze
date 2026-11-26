@@ -9,6 +9,7 @@
 
 use crate::p2p::GAME_PORT;
 use crate::powershell;
+use ds3_blaze_core::vpn::is_vpn;
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -57,30 +58,6 @@ Get-NetFirewallPortFilter -Protocol UDP | Where-Object { $_.LocalPort -contains 
 }
 Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct | ForEach-Object { "THIRDPARTY|$(Clean $_.displayName)" }
 "#;
-
-/// Lower-case fragments of adapter names and descriptions that mark a VPN or
-/// virtual tunnel adapter.
-const VPN_MARKERS: &[&str] = &[
-    "vpn",
-    "radmin",
-    "hamachi",
-    "zerotier",
-    "tailscale",
-    "wireguard",
-    "wintun",
-    "openvpn",
-    "tap-",
-    "tap ",
-    "tun",
-    "nordlynx",
-    "softether",
-    "anyconnect",
-    "fortinet",
-    "pangp",
-    "outline",
-    "amnezia",
-    "proton",
-];
 
 /// File name of the game's executable, whose rules are matched by name since
 /// its folder differs between installs.
@@ -330,12 +307,6 @@ pub fn read(peer: Option<Ipv4Addr>) -> std::io::Result<Records> {
     let mut args = vec![("GamePort", GAME_PORT.to_string())];
     args.extend(peer.map(|peer| ("Peer", peer.to_string())));
     Ok(Records::parse(&powershell::run(SCRIPT, &args)?))
-}
-
-/// Returns whether an adapter name or description looks like a VPN adapter.
-fn is_vpn(name: &str, description: &str) -> bool {
-    let text = format!("{name} {description}").to_lowercase();
-    VPN_MARKERS.iter().any(|marker| text.contains(marker))
 }
 
 /// Returns the source address Windows picks for UDP to `peer`, without sending.
