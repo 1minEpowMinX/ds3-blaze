@@ -16,9 +16,15 @@ pub fn check_nickname(name: &str) -> Result<(), String> {
         .chars()
         .find(|c| !(c.is_ascii_alphanumeric() || *c == '-' || *c == '_'))
     {
-        return Err(format!(
-            "{c:?} is not allowed; use letters, digits, - and _"
-        ));
+        // A Cyrillic or Greek letter can look like a Latin one, so the reason
+        // says which kind of letter is meant.
+        return Err(if c.is_alphabetic() {
+            format!("{c:?} is not an English letter; use A to Z, digits, - and _")
+        } else if c.is_whitespace() {
+            "a name has no spaces; use - or _ instead".into()
+        } else {
+            format!("{c:?} is not allowed; use English letters, digits, - and _")
+        });
     }
     // The characters are checked first, so the byte length here is the character count.
     if !NICKNAME_LENGTH.contains(&name.len()) {
@@ -291,6 +297,15 @@ mod tests {
         for refused in ["Айзек", "Isaac Clarke", "Isaac\nClarke", ""] {
             assert!(check_nickname(refused).is_err(), "{refused:?}");
         }
+    }
+
+    #[test]
+    fn a_refusal_names_what_is_wrong_with_a_character() {
+        let reason = |name| check_nickname(name).unwrap_err();
+        assert!(reason("русский").contains("not an English letter"));
+        assert!(reason("Ελένη").contains("not an English letter"));
+        assert!(reason("Isaac Clarke").contains("no spaces"));
+        assert!(reason("Isaac!").starts_with("'!' is not allowed"));
     }
 
     #[test]
