@@ -8,6 +8,14 @@ use ds3_blaze_core::vpn::{self, Adapter};
 use eframe::egui::{self, Color32, RichText};
 use std::net::Ipv4Addr;
 
+/// Returns whether the hosts file holds ds3-blaze entries.
+pub fn points_at_ds3_blaze(state: &State) -> bool {
+    matches!(
+        state,
+        State::Redirected(_) | State::Overridden { ours: Some(_), .. }
+    )
+}
+
 /// What a click on the start screen asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartClick {
@@ -78,10 +86,7 @@ impl Form {
     /// start screen are left behind by a server or a connection that ended
     /// without restoring them.
     pub fn offers_restore(&self) -> bool {
-        matches!(
-            self.hosts,
-            Ok(State::Redirected(_) | State::Overridden { ours: Some(_), .. })
-        )
+        self.hosts.as_ref().is_ok_and(points_at_ds3_blaze)
     }
 
     /// Draws the form and returns what a click asked for; `busy` disables

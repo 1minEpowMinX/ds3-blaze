@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod elevate;
 mod row;
 mod settings;
 mod start;
@@ -29,6 +30,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "ds3-blaze",
         options,
-        Box::new(|_| Ok(Box::new(app::App::new()))),
+        Box::new(|_| Ok(Box::new(app::App::new()?))),
     )
 }
