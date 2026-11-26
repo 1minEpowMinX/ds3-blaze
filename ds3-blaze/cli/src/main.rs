@@ -229,7 +229,8 @@ fn hosts(command: HostsCommand) -> io::Result<()> {
     );
     if let Err(err) = hosts::flush_dns() {
         eprintln!(
-            "warning: {err}; the game may keep the old address until the DNS cache              expires or Windows restarts"
+            "warning: {err}; the game may keep the old address until the DNS cache \
+             expires or Windows restarts"
         );
     }
     // An entry outside the section that comes first still wins after the write.
