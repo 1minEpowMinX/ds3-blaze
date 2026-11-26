@@ -193,7 +193,6 @@ impl HostFlow {
             refused_name: None,
         };
         flow.draw_link(Instant::now());
-        flow.draw_buttons();
         flow
     }
 
@@ -404,7 +403,7 @@ impl HostFlow {
 
     /// Takes `input` at `now` and returns the work it asks for.
     pub fn apply(&mut self, input: HostInput, now: Instant) -> Vec<HostAction> {
-        let actions = match input {
+        match input {
             HostInput::Click(click) => self.click(click, now),
             HostInput::Network(network) => self.network(network, now),
             HostInput::Route(network) => {
@@ -457,9 +456,7 @@ impl HostFlow {
                 self.draw_link(now);
                 Vec::new()
             }
-        };
-        self.draw_buttons();
-        actions
+        }
     }
 
     fn click(&mut self, click: Click, now: Instant) -> Vec<HostAction> {
@@ -743,18 +740,6 @@ impl HostFlow {
         }
         self.steps[LINK] = step;
     }
-
-    /// Sets the buttons each step shows for the current state.
-    fn draw_buttons(&mut self) {
-        let busy = self.busy().then_some(BUSY);
-        let start = if self.serving() {
-            Some("The server is already running")
-        } else {
-            busy
-        };
-        self.steps[NETWORK].buttons =
-            vec![Button::elevated("Start server", Click::StartServer).disabled_by(start)];
-    }
 }
 
 #[cfg(test)]
@@ -999,11 +984,7 @@ mod tests {
         );
         assert_eq!(flow.steps()[SERVER].status, Status::Ok);
         assert_eq!(flow.steps()[SERVER].summary, DONE[SERVER]);
-        assert!(flow.steps()[NETWORK].buttons[0].elevates);
-        assert_eq!(
-            flow.steps()[NETWORK].buttons[0].disabled,
-            Some("The server is already running")
-        );
+        assert!(flow.steps()[NETWORK].buttons.is_empty());
         assert!(!flow.busy());
     }
 

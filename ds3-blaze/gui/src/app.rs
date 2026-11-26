@@ -139,35 +139,53 @@ impl App {
 
     /// Returns the window showing the preview [`preview::VARIABLE`] names,
     /// with the settings kept in a file of its own, or the window unchanged
-    /// when it names no mode.
+    /// while the variable is not set.
     #[cfg(debug_assertions)]
     fn preview(mut self) -> App {
-        use crate::preview;
-        let (screen, name, open) = match std::env::var(preview::VARIABLE).as_deref() {
-            Ok("host") => (
-                Screen::Host {
-                    flow: Box::new(preview::host()),
-                },
+        use crate::preview::{self, Preview};
+        let Ok(value) = std::env::var(preview::VARIABLE) else {
+            return self;
+        };
+        let guest = |flow| Screen::Guest {
+            flow: Box::new(flow),
+            own: preview::GUEST,
+            host: preview::HOST.to_string(),
+            refused: None,
+        };
+        let host = |flow| Screen::Host {
+            flow: Box::new(flow),
+        };
+        let (screen, name, open) = match Preview::parse(&value) {
+            Preview::Start => (Screen::Start(preview::start()), "Isaac", None),
+            Preview::HostIdle => (
+                host(HostFlow::new(
+                    preview::HOST,
+                    "Isaac".into(),
+                    Default::default(),
+                )),
                 "Isaac",
-                3,
+                None,
             ),
-            Ok("guest") => (
-                Screen::Guest {
-                    flow: Box::new(preview::guest()),
-                    own: preview::GUEST,
-                    host: preview::HOST.to_string(),
-                    refused: None,
-                },
+            Preview::Host => (host(preview::host()), "Isaac", None),
+            Preview::GuestIdle => (
+                guest(GuestFlow::new(
+                    preview::GUEST,
+                    "Carver".into(),
+                    Ipv4Addr::UNSPECIFIED,
+                )),
                 "Carver",
-                3,
+                None,
             ),
-            _ => return self,
+            Preview::Guest => (guest(preview::guest()), "Carver", Some(3)),
+            Preview::GuestReady => (guest(preview::guest_ready()), "Carver", None),
         };
         self.settings_path = std::env::temp_dir().join("ds3-blaze-preview.toml");
         self.settings.name = name.into();
         self.screen = screen;
         self.open = vec![false; 8];
-        self.open[open] = true;
+        if let Some(open) = open {
+            self.open[open] = true;
+        }
         self
     }
 
@@ -489,17 +507,17 @@ impl App {
             return;
         };
         if host.trim().is_empty() {
-            *refused = Some("type the host's VPN address".into());
+            *refused = Some("Type the host's VPN address".into());
             return;
         }
         let address = match host.trim().parse::<Ipv4Addr>() {
             Ok(address) if address != *own && !address.is_unspecified() => address,
             Ok(_) => {
-                *refused = Some("type the host's VPN address, not your own".into());
+                *refused = Some("Type the host's VPN address, not your own".into());
                 return;
             }
             Err(_) => {
-                *refused = Some(format!("{host:?} is not an IPv4 address"));
+                *refused = Some(format!("{} is not an IPv4 address", host.trim()));
                 return;
             }
         };

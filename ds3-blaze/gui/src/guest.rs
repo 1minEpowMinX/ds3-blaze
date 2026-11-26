@@ -148,7 +148,6 @@ impl GuestFlow {
         self.nickname = None;
         self.draw_link(now);
         self.draw_game();
-        self.draw_buttons();
     }
 
     /// Returns the button that ends the connection and restores the EA
@@ -256,9 +255,7 @@ impl GuestFlow {
 
     /// Takes `input` at `now` and returns the work it asks for.
     pub fn apply(&mut self, input: GuestInput, now: Instant) -> Vec<GuestAction> {
-        let actions = self.take(input, now);
-        self.draw_buttons();
-        actions
+        self.take(input, now)
     }
 
     fn take(&mut self, input: GuestInput, now: Instant) -> Vec<GuestAction> {
@@ -493,13 +490,6 @@ impl GuestFlow {
         self.steps[LINK] = step;
     }
 
-    /// Sets the buttons of the steps for the current state.
-    fn draw_buttons(&mut self) {
-        let busy = self.busy().then_some(BUSY);
-        self.steps[NETWORK].buttons =
-            vec![Button::elevated("Connect", Click::Connect).disabled_by(busy)];
-    }
-
     fn draw_game(&mut self) {
         let step = &mut self.steps[GAME];
         *step = Step::new(WAITING[GAME]);
@@ -698,7 +688,13 @@ mod tests {
     fn buttons_that_ask_for_permission_say_so() {
         let now = Instant::now();
         let mut flow = reaching(now);
-        assert!(flow.steps()[NETWORK].buttons[0].elevates);
+        assert!(
+            super::tests::flow()
+                .banner()
+                .action
+                .expect("Connect")
+                .elevates
+        );
         assert!(flow.exit().elevates);
         assert!(Button::fix(&Fix::GameRule).elevates);
         flow.apply(GuestInput::Reach(reports(Ok(String::new()))), now);
@@ -714,10 +710,9 @@ mod tests {
         assert_eq!(flow.exit().disabled, Some(NOTHING_TO_UNDO));
         flow.apply(GuestInput::Click(Click::Connect), Instant::now());
         assert_eq!(
-            flow.steps()[NETWORK].buttons[0].disabled,
+            flow.exit().disabled,
             Some("Wait until the current step ends")
         );
-        assert_eq!(flow.exit().disabled, Some(BUSY));
     }
 
     #[test]

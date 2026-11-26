@@ -7,7 +7,7 @@ use crate::step::{BUSY, Button, Click};
 use ds3_blaze_core::hosts::{self, State};
 use ds3_blaze_core::players::check_nickname;
 use ds3_blaze_core::vpn::{self, Adapter};
-use eframe::egui::{self, CursorIcon, Margin, RichText, Sense};
+use eframe::egui::{self, CursorIcon, Label, Margin, RichText, Sense};
 use std::net::Ipv4Addr;
 
 /// Returns whether the hosts file holds ds3-blaze entries.
@@ -291,12 +291,11 @@ fn card(ui: &mut egui::Ui, width: f32, title: &str, subtitle: &str, enabled: boo
                 ui.set_width(width - 38.0);
                 ui.set_min_height(56.0);
                 ui.vertical(|ui| {
-                    ui.label(
-                        RichText::new(title)
-                            .size(19.0)
-                            .color(ui.visuals().strong_text_color()),
-                    );
-                    ui.label(RichText::new(subtitle).weak());
+                    let title = RichText::new(title)
+                        .size(19.0)
+                        .color(ui.visuals().strong_text_color());
+                    ui.add(Label::new(title).selectable(false));
+                    ui.add(Label::new(RichText::new(subtitle).weak()).selectable(false));
                 });
             });
         let response = ui.interact(
