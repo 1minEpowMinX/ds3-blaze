@@ -3,7 +3,7 @@
 
 use crate::banner;
 use crate::elevate;
-use crate::guest::{GuestAction, GuestFlow, GuestInput};
+use crate::guest::{self, GuestAction, GuestFlow, GuestInput};
 use crate::host::{HostAction, HostFlow, HostInput};
 use crate::row;
 use crate::run;
@@ -11,6 +11,7 @@ use crate::session;
 use crate::settings::{self, Mode, Settings};
 use crate::start::{self, Form, StartClick};
 use crate::step::{BUSY, Button, Click};
+use crate::theme;
 use ds3_blaze_core::event::Event;
 use ds3_blaze_core::hosts;
 use ds3_blaze_core::log;
@@ -28,7 +29,7 @@ use tokio::sync::broadcast::error::RecvError;
 const TICK: Duration = Duration::from_secs(1);
 
 /// Colour of errors the window shows.
-const ERROR: egui::Color32 = row::RED;
+const ERROR: egui::Color32 = theme::RED;
 
 /// What the window shows.
 enum Screen {
@@ -552,36 +553,29 @@ impl App {
                 if busy {
                     ui.ctx().request_repaint_after(TICK);
                 }
-                egui::CentralPanel::default_margins().show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        let mut enter = false;
-                        let banner = banner::show(ui, &flow.banner(), |ui| {
-                            let field = egui::TextEdit::singleline(host)
-                                .hint_text("26.0.0.1")
-                                .margin(vec2(8.0, 6.0))
-                                .desired_width(260.0);
-                            let field = ui.add_enabled(!busy, field);
-                            enter = field.lost_focus()
-                                && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                            if let Some(refused) = refused.as_deref() {
-                                ui.label(RichText::new(refused).color(ERROR));
-                            }
-                        });
-                        ui.add_space(8.0);
-                        let done = flow.setup_done();
-                        self.setup_open &= done;
-                        let rows = row::setup(
-                            ui,
-                            flow.steps(),
-                            &mut self.open,
-                            done,
-                            &mut self.setup_open,
-                        );
-                        input.click = exit.or(banner).or(rows);
-                        if enter && !busy {
-                            input.click = Some(Click::Connect);
+                central(ui, |ui| {
+                    let mut enter = false;
+                    let banner = banner::show(ui, &flow.banner(), |ui| {
+                        let field = egui::TextEdit::singleline(host)
+                            .hint_text("26.0.0.1")
+                            .margin(vec2(10.0, 7.0))
+                            .desired_width(260.0);
+                        let field = ui.add_enabled(!busy, field);
+                        enter = field.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                        if let Some(refused) = refused.as_deref() {
+                            ui.label(RichText::new(refused).color(ERROR));
                         }
                     });
+                    theme::section(ui, "Setup");
+                    let done = flow.setup_done();
+                    self.setup_open &= done;
+                    let rows =
+                        row::setup(ui, flow.steps(), &mut self.open, done, &mut self.setup_open);
+                    input.click = exit.or(banner).or(rows);
+                    if enter && !busy {
+                        input.click = Some(Click::Connect);
+                    }
                 });
             }
             Screen::Host { flow } => {
@@ -597,22 +591,15 @@ impl App {
                 if flow.busy() {
                     ui.ctx().request_repaint_after(TICK);
                 }
-                egui::CentralPanel::default_margins().show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        let banner = banner::show(ui, &flow.banner(), |_| {});
-                        ui.add_space(8.0);
-                        let done = flow.setup_done();
-                        self.setup_open &= done;
-                        let rows = row::setup(
-                            ui,
-                            flow.steps(),
-                            &mut self.open,
-                            done,
-                            &mut self.setup_open,
-                        );
-                        let session = flow.session().and_then(|view| session::show(ui, &view));
-                        input.click = exit.or(banner).or(rows).or(session);
-                    });
+                central(ui, |ui| {
+                    let banner = banner::show(ui, &flow.banner(), |_| {});
+                    theme::section(ui, "Setup");
+                    let done = flow.setup_done();
+                    self.setup_open &= done;
+                    let rows =
+                        row::setup(ui, flow.steps(), &mut self.open, done, &mut self.setup_open);
+                    let session = flow.session().and_then(|view| session::show(ui, &view));
+                    input.click = exit.or(banner).or(rows).or(session);
                 });
             }
         }
@@ -627,20 +614,29 @@ fn header(ui: &mut egui::Ui, title: &str, stay: Option<&'static str>) -> bool {
     egui::Panel::top("header")
         .frame(
             egui::Frame::new()
-                .fill(ui.visuals().extreme_bg_color)
-                .inner_margin(Margin::symmetric(16, 10)),
+                .fill(theme::BACKGROUND)
+                .inner_margin(Margin {
+                    left: 16,
+                    right: 16,
+                    top: 14,
+                    bottom: 12,
+                }),
         )
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let arrow = egui::Button::new(RichText::new("←").size(18.0));
-                let response = ui.add_enabled(stay.is_none(), arrow);
-                let response = match stay {
-                    Some(reason) => response.on_disabled_hover_text(reason),
-                    None => response.on_hover_text("Back"),
-                };
-                back = response.clicked();
-                ui.add_space(6.0);
-                ui.label(RichText::new(title).size(16.0).strong());
+            theme::column(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let arrow = egui::Button::new(RichText::new("←").size(20.0))
+                        .frame(false)
+                        .min_size(vec2(30.0, 30.0));
+                    let response = ui.add_enabled(stay.is_none(), arrow);
+                    let response = match stay {
+                        Some(reason) => response.on_disabled_hover_text(reason),
+                        None => response.on_hover_text("Back"),
+                    };
+                    back = response.clicked();
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(title).heading().color(theme::STRONG));
+                });
             });
         });
     back
@@ -652,18 +648,44 @@ fn header(ui: &mut egui::Ui, title: &str, stay: Option<&'static str>) -> bool {
 fn footer(ui: &mut egui::Ui, exit: &Button, errors: [&Option<String>; 2]) -> Option<Click> {
     let mut click = None;
     egui::Panel::bottom("footer")
-        .frame(egui::Frame::new().inner_margin(Margin::symmetric(16, 12)))
+        .frame(
+            egui::Frame::new()
+                .fill(theme::BACKGROUND)
+                .inner_margin(Margin::symmetric(16, 12)),
+        )
         .show(ui, |ui| {
-            for error in errors.into_iter().flatten() {
-                ui.label(RichText::new(error).color(ERROR));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if row::action(ui, exit, 32.0) {
-                    click = Some(exit.click.clone());
+            theme::column(ui, |ui| {
+                for error in errors.into_iter().flatten() {
+                    ui.label(RichText::new(error).color(ERROR));
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if row::action(ui, exit, 32.0) {
+                        click = Some(exit.click.clone());
+                    }
+                });
             });
         });
     click
+}
+
+/// Draws `add` in the middle of the window, in the centred column and
+/// scrolled when it is taller than the window.
+fn central(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::new()
+                .fill(theme::BACKGROUND)
+                .inner_margin(Margin::symmetric(16, 0)),
+        )
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                theme::column(ui, |ui| {
+                    ui.add_space(16.0);
+                    add(ui);
+                    ui.add_space(20.0);
+                });
+            });
+        });
 }
 
 impl eframe::App for App {
@@ -686,21 +708,20 @@ impl eframe::App for App {
         let mut mode = ModeInput::default();
         let busy = self.busy;
         if let Screen::Start(form) = &mut self.screen {
-            egui::CentralPanel::default_margins().show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    start_click = form
-                        .show(ui, busy)
-                        .map(|click| (click, form.name.clone(), form.address));
-                    if busy {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label("waiting for the administrator prompt and the command line");
-                        });
-                    }
-                    for error in [&self.message, &self.save_error].into_iter().flatten() {
-                        ui.label(RichText::new(error).color(ERROR));
-                    }
-                });
+            central(ui, |ui| {
+                start_click = form
+                    .show(ui, busy)
+                    .map(|click| (click, form.name.clone(), form.address));
+                if busy {
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(guest::PROMPT);
+                    });
+                }
+                for error in [&self.message, &self.save_error].into_iter().flatten() {
+                    ui.label(RichText::new(error).color(ERROR));
+                }
             });
         } else {
             mode = self.mode_screen(ui);

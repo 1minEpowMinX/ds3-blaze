@@ -99,7 +99,7 @@ The full client scenario of today's `selftest` (login, room creation, the second
 
 ### Start screen
 
-The start screen asks for the player's name and offers the two modes as large cards: host a game, or join a friend.
+The start screen asks for the player's name and VPN address in one card and offers the two modes as large cards below it: host a game, or join a friend.
 
 The player's own VPN address is chosen here once, for both modes. The first address `vpn::choices` returns is taken and shown as one line with its adapter's name and "Change", which opens the list of VPN adapters, and of the adapter holding the chosen address, with the others behind "Show all adapters". Without an adapter to choose, the line asks the player to connect the VPN and offers "Read adapters again". When another VPN adapter is up beside the chosen one, one line under the address says that another VPN can take over the other player's traffic.
 
@@ -114,6 +114,12 @@ A mode's screen holds, from top to bottom:
 - **Setup:** the steps as quiet rows. Once the mode is set up (`setup_done`: every guest step done; the host's server running with the steps before the link done and the link done or waiting for a guest) they collapse into one line, "Setup done", which the player may open; when a step runs, needs a fix or fails, the list opens by itself.
 - **Session**, host only: the room, the players and the server log.
 - **Footer:** the button that ends the mode's changes, "Stop hosting" or "Disconnect".
+
+### Look
+
+Every screen is one column of cards, centred in the window and no wider than `theme::COLUMN`, on a background darker than the cards. A title in small capitals opens each part: Setup, This game, Players, Server log on a mode's screen; You and Play on the start screen. The setup rows, the players and the room's three values each sit in one card with thin lines between their parts, and an open row's details, the log and the fields sit in wells darker than the card.
+
+Colour carries one meaning each. The accent fills the banner's button, the one thing to press next, marks the shield and a running step, and colours the bar of a neutral banner; nothing else uses it. Green, orange and red mark how a step, a finding or a player stands, and tint the banner with its bar on the left. A done row is plain text, a waiting one weak, so the eye goes to the banner first and then to whatever needs attention. The palette, the type sizes and the spacing are defined once, in `gui/src/theme.rs`.
 
 ### Banner
 

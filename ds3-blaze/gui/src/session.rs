@@ -1,10 +1,12 @@
 //! The host's session while the server runs: the room, the players and the
 //! server's recent log lines.
 
-use crate::row::{GREEN, GREY, ORANGE, RED};
 use crate::step::Click;
+use crate::theme::{self, GREEN, GREY, ORANGE, RED, STRONG, TEXT, WEAK};
 use ds3_blaze_core::snapshot::RoomState;
-use eframe::egui::{self, Align2, Color32, Label, Margin, RichText, Sense, TextStyle, Vec2, vec2};
+use eframe::egui::{
+    self, Align, Align2, Color32, Label, Layout, Margin, RichText, Sense, TextStyle, Vec2, vec2,
+};
 use std::net::Ipv4Addr;
 
 /// Number of log lines the session shows.
@@ -12,6 +14,12 @@ pub const SESSION_LOG_LINES: usize = 6;
 
 /// Width of a guest's name field, in points.
 const NAME_WIDTH: f32 = 170.0;
+
+/// Height of a player's row, in points.
+const PLAYER_HEIGHT: f32 = 42.0;
+
+/// Space between a card's edge and its content, in points.
+const PADDING: i8 = 14;
 
 /// What the host's session shows while the server runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,8 +69,7 @@ pub fn state_word(state: RoomState) -> String {
 /// Draws `view` and returns the click a field or a button gave.
 pub fn show(ui: &mut egui::Ui, view: &SessionView) -> Option<Click> {
     let mut click = None;
-    ui.add_space(16.0);
-    heading(ui, "This game");
+    theme::section(ui, "This game");
     tiles(
         ui,
         [
@@ -71,16 +78,27 @@ pub fn show(ui: &mut egui::Ui, view: &SessionView) -> Option<Click> {
             ("Matchmaking", view.matchmaking),
         ],
     );
-    ui.add_space(14.0);
-    heading(ui, "Players");
-    for player in &view.players {
-        if let Some(row_click) = player_row(ui, player) {
-            click = Some(row_click);
-        }
-    }
+
+    theme::section(ui, "Players");
+    theme::card()
+        .inner_margin(Margin::symmetric(PADDING, 0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (index, player) in view.players.iter().enumerate() {
+                if index > 0 {
+                    theme::divider(ui);
+                }
+                if let Some(row_click) = player_row(ui, player) {
+                    click = Some(row_click);
+                }
+            }
+        });
     if let Some(refused) = &view.refused_name {
+        ui.add_space(4.0);
         ui.label(RichText::new(refused).color(RED));
     }
+    ui.add_space(8.0);
     let mut on = view.only_allowed;
     if ui
         .checkbox(&mut on, "Only let in players I approve")
@@ -88,64 +106,77 @@ pub fn show(ui: &mut egui::Ui, view: &SessionView) -> Option<Click> {
     {
         click = Some(Click::OnlyAllowed(!view.only_allowed));
     }
-    ui.add_space(14.0);
+
+    ui.add_space(18.0);
     let (_, open_logs) = egui::Sides::new().show(
         ui,
-        |ui| heading(ui, "Server log"),
-        |ui| ui.button("Open logs folder").clicked(),
+        |ui| theme::section_label(ui, "Server log"),
+        |ui| ui.small_button("Open logs folder").clicked(),
     );
     if open_logs {
         click = Some(Click::OpenLogs);
     }
+    ui.add_space(4.0);
     let start = view.log.len().saturating_sub(SESSION_LOG_LINES);
-    egui::Frame::new()
-        .fill(ui.visuals().faint_bg_color)
-        .corner_radius(8.0)
-        .inner_margin(Margin::same(10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            if view.log.is_empty() {
-                ui.label(RichText::new("Nothing yet").weak());
-            }
-            for line in &view.log[start..] {
-                ui.add(
-                    Label::new(RichText::new(line).text_style(TextStyle::Monospace).weak())
-                        .truncate(),
-                );
-            }
-        });
+    theme::inset(PADDING).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if view.log.is_empty() {
+            ui.label(RichText::new("Nothing yet").color(WEAK));
+        }
+        for line in &view.log[start..] {
+            ui.add(
+                Label::new(
+                    RichText::new(line)
+                        .text_style(TextStyle::Monospace)
+                        .color(WEAK),
+                )
+                .truncate(),
+            );
+        }
+    });
     click
 }
 
-/// Draws the title of a part of the session.
-fn heading(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        RichText::new(text)
-            .strong()
-            .color(ui.visuals().strong_text_color()),
-    );
-    ui.add_space(4.0);
-}
-
-/// Draws `tiles` side by side, each a caption over its value or "–".
+/// Draws `tiles` side by side in one card, each a caption over its value or
+/// "–", with a line between two.
 fn tiles(ui: &mut egui::Ui, tiles: [(&str, Option<&str>); 3]) {
-    let spacing = ui.spacing().item_spacing.x;
-    let width = (ui.available_width() - spacing * 2.0) / 3.0;
-    ui.horizontal_top(|ui| {
-        for (caption, value) in tiles {
-            egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
-                .corner_radius(8.0)
-                .inner_margin(Margin::same(10))
-                .show(ui, |ui| {
-                    ui.set_width(width - 20.0);
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(caption).small().weak());
-                        ui.add(Label::new(value.unwrap_or("–")).wrap());
-                    });
-                });
-        }
-    });
+    theme::card()
+        .inner_margin(Margin::symmetric(0, PADDING))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let width = ui.available_width() / 3.0;
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.horizontal_top(|ui| {
+                for (index, (caption, value)) in tiles.into_iter().enumerate() {
+                    let tile = ui.allocate_ui_with_layout(
+                        vec2(width, 0.0),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.set_width(width);
+                            egui::Frame::new()
+                                .inner_margin(Margin::symmetric(PADDING + 2, 0))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.spacing_mut().item_spacing.y = 4.0;
+                                    ui.label(RichText::new(caption).small().color(WEAK));
+                                    let value = RichText::new(value.unwrap_or("–"))
+                                        .size(15.0)
+                                        .color(if value.is_some() { STRONG } else { WEAK });
+                                    ui.add(Label::new(value).wrap());
+                                });
+                        },
+                    );
+                    if index > 0 {
+                        let rect = tile.response.rect;
+                        ui.painter().vline(
+                            rect.left(),
+                            rect.y_range(),
+                            egui::Stroke::new(1.0, theme::LINE),
+                        );
+                    }
+                }
+            });
+        });
 }
 
 /// Draws a round dot of `colour` that marks a player's state.
@@ -161,17 +192,20 @@ fn dot(ui: &mut egui::Ui, colour: Color32) {
 /// address has no name field.
 fn player_row(ui: &mut egui::Ui, player: &PlayerRow) -> Option<Click> {
     let mut click = None;
-    ui.horizontal(|ui| {
-        ui.set_min_height(30.0);
+    let size = vec2(ui.available_width(), PLAYER_HEIGHT);
+    ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+        ui.set_min_size(size);
         if player.you {
             dot(ui, GREEN);
-            ui.label(RichText::new(&player.name).color(ui.visuals().strong_text_color()));
-            ui.label(RichText::new("(you)").weak());
+            ui.label(RichText::new(&player.name).color(STRONG));
+            ui.label(RichText::new("you").color(WEAK));
             return;
         }
         if player.refused {
             dot(ui, ORANGE);
-            ui.label(format!("Someone at {} was turned away", player.address));
+            ui.label(
+                RichText::new(format!("Someone at {} was turned away", player.address)).color(TEXT),
+            );
         } else {
             dot(ui, if player.connected { GREEN } else { GREY });
             let id = egui::Id::unique(("player name", player.address));
@@ -192,19 +226,23 @@ fn player_row(ui: &mut egui::Ui, player: &PlayerRow) -> Option<Click> {
             } else if field.has_focus() {
                 ui.data_mut(|data| data.insert_temp(id, draft));
             }
-            ui.label(RichText::new(player.address.to_string()).weak());
+            ui.label(RichText::new(player.address.to_string()).color(WEAK));
             if !player.connected {
-                ui.label(RichText::new("offline").weak());
+                ui.label(RichText::new("offline").color(WEAK));
             }
         }
         if let Some(offered) = &player.offered {
-            ui.label(RichText::new(format!("calls itself {offered}")).weak());
+            ui.label(RichText::new(format!("calls itself {offered}")).color(WEAK));
             if !player.refused && ui.small_button("Use this name").clicked() {
                 click = Some(Click::UseOffered(player.address));
             }
         }
-        if player.refused && ui.button("Let in").clicked() {
-            click = Some(Click::Allow(player.address));
+        if player.refused {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Let in").clicked() {
+                    click = Some(Click::Allow(player.address));
+                }
+            });
         }
     });
     click

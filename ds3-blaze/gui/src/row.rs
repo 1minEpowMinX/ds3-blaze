@@ -1,7 +1,9 @@
 //! The row a step is drawn as: a marker, the step's sentence and a chevron
 //! on one line, and the details in a panel below it while the row is open.
 
+use crate::checks::sentence;
 use crate::step::{Button, Click, Detail, Status, Step};
+use crate::theme::{self, ACCENT, GREEN, GREY, ON_ACCENT, ORANGE, RED, STRONG, TEXT, WEAK};
 use ds3_blaze_diag::netcheck::{Finding, Severity};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
@@ -24,17 +26,14 @@ const SHIELD_SPACE: f32 = 20.0;
 /// What an elevating button says on hover.
 const PERMISSION: &str = "Windows asks for permission";
 
-pub const GREEN: Color32 = Color32::from_rgb(95, 185, 105);
-pub const ORANGE: Color32 = Color32::from_rgb(230, 150, 50);
-pub const RED: Color32 = Color32::from_rgb(225, 85, 75);
-pub const BLUE: Color32 = Color32::from_rgb(95, 155, 235);
-pub const GREY: Color32 = Color32::from_gray(140);
+/// Space between a card's edge and what a row draws in it.
+const CARD_PADDING: f32 = 6.0;
 
 /// Returns the colour a status is drawn in.
 fn status_colour(status: Status) -> Color32 {
     match status {
         Status::Waiting => GREY,
-        Status::Running => BLUE,
+        Status::Running => ACCENT,
         Status::Ok => GREEN,
         Status::Warning => ORANGE,
         Status::Failed => RED,
@@ -47,7 +46,7 @@ fn status_colour(status: Status) -> Color32 {
 /// A click anywhere on the line toggles `open` when the step has details,
 /// a note or buttons; they show in a panel below the line while `open` is
 /// true.
-pub fn show(ui: &mut egui::Ui, number: usize, step: &Step, open: &mut bool) -> Option<Click> {
+fn show(ui: &mut egui::Ui, number: usize, step: &Step, open: &mut bool) -> Option<Click> {
     let openable = !step.details.is_empty() || step.note.is_some() || !step.buttons.is_empty();
     let line = ui
         .allocate_ui_with_layout(
@@ -58,11 +57,7 @@ pub fn show(ui: &mut egui::Ui, number: usize, step: &Step, open: &mut bool) -> O
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     chevron(ui, openable.then_some(*open));
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.add(
-                            Label::new(summary_text(step, ui))
-                                .truncate()
-                                .selectable(false),
-                        );
+                        ui.add(Label::new(summary_text(step)).truncate().selectable(false));
                     });
                 });
             },
@@ -80,23 +75,23 @@ pub fn show(ui: &mut egui::Ui, number: usize, step: &Step, open: &mut bool) -> O
             *open = !*open;
         }
     }
-    let click = if openable && *open {
+    if openable && *open {
         panel(ui, step)
     } else {
         None
-    };
-    ui.add(egui::Separator::default().spacing(0.0));
-    click
+    }
 }
 
 /// Returns the sentence as a line shows it: weak while the step waits,
-/// coloured while it needs attention.
-fn summary_text(step: &Step, ui: &egui::Ui) -> RichText {
+/// plain once it is done, bright while it runs and coloured while it needs
+/// attention.
+fn summary_text(step: &Step) -> RichText {
     let text = RichText::new(&step.summary);
     match step.status {
-        Status::Waiting => text.color(ui.visuals().weak_text_color()),
+        Status::Waiting => text.color(WEAK),
+        Status::Ok => text.color(TEXT),
+        Status::Running => text.color(STRONG),
         Status::Warning | Status::Failed => text.color(status_colour(step.status)),
-        Status::Running | Status::Ok => text.color(ui.visuals().strong_text_color()),
     }
 }
 
@@ -129,7 +124,7 @@ fn marker(ui: &mut egui::Ui, number: Option<usize>, status: Status) {
                 Align2::CENTER_CENTER,
                 number.to_string(),
                 FontId::proportional(13.0),
-                ui.visuals().text_color(),
+                WEAK,
             );
         }
         Status::Ok | Status::Warning | Status::Failed => sign(ui, centre, status, colour),
@@ -178,7 +173,7 @@ fn chevron(ui: &mut egui::Ui, open: Option<bool>) {
     };
     ui.painter().line(
         points.iter().map(|point| centre + *point).collect(),
-        Stroke::new(1.5, ui.visuals().weak_text_color()),
+        Stroke::new(1.5, WEAK),
     );
 }
 
@@ -188,29 +183,52 @@ fn chevron(ui: &mut egui::Ui, open: Option<bool>) {
 /// A button that brings up the administrator prompt has a shield before its
 /// label and says so on hover.
 pub fn action(ui: &mut egui::Ui, button: &Button, height: f32) -> bool {
-    let label: egui::WidgetText = if button.elevates {
-        let mut job = LayoutJob::default();
-        job.append(
-            button.label,
-            SHIELD_SPACE,
-            TextFormat {
-                font_id: egui::TextStyle::Button.resolve(ui.style()),
-                // The placeholder takes the button's own text colour.
-                color: Color32::PLACEHOLDER,
-                ..TextFormat::default()
-            },
-        );
-        job.into()
+    draw(ui, button, height, false)
+}
+
+/// Draws `button` as the one thing to press next, filled with the accent,
+/// and returns whether it was pressed.
+pub fn main_action(ui: &mut egui::Ui, button: &Button, height: f32) -> bool {
+    draw(ui, button, height, true)
+}
+
+/// Draws `button`, filled with the accent when `main`, and returns whether
+/// it was pressed.
+fn draw(ui: &mut egui::Ui, button: &Button, height: f32, main: bool) -> bool {
+    let colour = if main {
+        ON_ACCENT
     } else {
-        button.label.into()
+        Color32::PLACEHOLDER
     };
-    let widget = egui::Button::new(label).min_size(vec2(0.0, height));
+    let mut job = LayoutJob::default();
+    job.append(
+        button.label,
+        if button.elevates { SHIELD_SPACE } else { 0.0 },
+        TextFormat {
+            font_id: egui::TextStyle::Button.resolve(ui.style()),
+            // The placeholder takes the button's own text colour.
+            color: colour,
+            ..TextFormat::default()
+        },
+    );
+    let mut widget = egui::Button::new(job).min_size(vec2(0.0, height));
+    if main {
+        widget = widget.fill(ACCENT).stroke(Stroke::NONE);
+    }
     let response = ui.add_enabled(button.enabled(), widget);
+    if main && response.hovered() && button.enabled() {
+        ui.painter()
+            .rect_filled(response.rect, 8, Color32::WHITE.gamma_multiply(0.08));
+    }
     if button.elevates {
         let left = response.rect.left() + ui.spacing().button_padding.x;
         let centre = pos2(left + SHIELD_SPACE / 2.0 - 3.0, response.rect.center().y);
-        let colour = if button.enabled() { BLUE } else { GREY };
-        shield(ui.painter(), centre, colour);
+        let shield_colour = match (button.enabled(), main) {
+            (false, _) => GREY,
+            (true, true) => ON_ACCENT,
+            (true, false) => ACCENT,
+        };
+        shield(ui.painter(), centre, shield_colour);
     }
     let response = match button.disabled {
         Some(reason) => response.on_disabled_hover_text(reason),
@@ -242,9 +260,29 @@ fn shield(painter: &egui::Painter, centre: Pos2, colour: Color32) {
     );
 }
 
-/// Draws the steps as rows and returns the click one of them gave; while
-/// `done`, they fold into one "Setup done" line that `expanded` opens.
+/// Draws the steps as rows of one card and returns the click one of them
+/// gave; while `done`, they fold into one "Setup done" line that `expanded`
+/// opens.
 pub fn setup(
+    ui: &mut egui::Ui,
+    steps: &[Step],
+    open: &mut [bool],
+    done: bool,
+    expanded: &mut bool,
+) -> Option<Click> {
+    theme::card()
+        .inner_margin(Margin::symmetric(CARD_PADDING as i8, 0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // Rows sit edge to edge; the dividers mark where one ends.
+            ui.spacing_mut().item_spacing.y = 0.0;
+            rows(ui, steps, open, done, expanded)
+        })
+        .inner
+}
+
+/// Draws the inside of the setup card and returns the click a row gave.
+fn rows(
     ui: &mut egui::Ui,
     steps: &[Step],
     open: &mut [bool],
@@ -261,8 +299,7 @@ pub fn setup(
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         chevron(ui, Some(*expanded));
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            let text =
-                                RichText::new("Setup done").color(ui.visuals().strong_text_color());
+                            let text = RichText::new("Setup done").color(TEXT);
                             ui.add(Label::new(text).selectable(false));
                         });
                     });
@@ -276,13 +313,16 @@ pub fn setup(
         if line.clicked() {
             *expanded = !*expanded;
         }
-        ui.add(egui::Separator::default().spacing(0.0));
         if !*expanded {
             return None;
         }
+        theme::divider(ui);
     }
     let mut click = None;
     for (index, step) in steps.iter().enumerate() {
+        if index > 0 {
+            theme::divider(ui);
+        }
         if let Some(row_click) = show(ui, index + 1, step, &mut open[index]) {
             click = Some(row_click);
         }
@@ -305,20 +345,17 @@ fn buttons(ui: &mut egui::Ui, step: &Step) -> Option<Click> {
 /// buttons; returns the click one of them gave.
 fn panel(ui: &mut egui::Ui, step: &Step) -> Option<Click> {
     let mut click = None;
-    let indent = (MARKER_GAP + MARKER_SIZE) as i8;
-    egui::Frame::new()
-        .fill(ui.visuals().faint_bg_color)
-        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-        .corner_radius(8.0)
-        .inner_margin(Margin::same(12))
+    let indent = (MARKER_GAP * 2.0 + MARKER_SIZE) as i8;
+    theme::inset(12)
         .outer_margin(Margin {
             left: indent,
-            right: 0,
+            right: CARD_PADDING as i8,
             top: 0,
-            bottom: 8,
+            bottom: 12,
         })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 6.0;
             for detail in &step.details {
                 if let Some(detail_click) = show_detail(ui, detail) {
                     click = Some(detail_click);
@@ -328,13 +365,15 @@ fn panel(ui: &mut egui::Ui, step: &Step) -> Option<Click> {
                 return;
             }
             if !step.details.is_empty() {
-                ui.separator();
+                ui.add_space(4.0);
+                theme::divider(ui);
+                ui.add_space(4.0);
             }
             let (_, button_click) = egui::Sides::new().shrink_left().show(
                 ui,
                 |ui| {
                     if let Some(note) = &step.note {
-                        ui.add(Label::new(RichText::new(note).weak()).wrap());
+                        ui.add(Label::new(RichText::new(note).color(WEAK)).wrap());
                     }
                 },
                 |ui| buttons(ui, step),
@@ -350,7 +389,7 @@ fn panel(ui: &mut egui::Ui, step: &Step) -> Option<Click> {
 fn show_detail(ui: &mut egui::Ui, detail: &Detail) -> Option<Click> {
     match detail {
         Detail::Text(text) => {
-            ui.add(Label::new(text.as_str()).wrap());
+            ui.add(Label::new(RichText::new(sentence(text)).color(TEXT)).wrap());
             None
         }
         Detail::Finding(finding) => show_finding(ui, finding),
@@ -365,7 +404,7 @@ fn show_finding(ui: &mut egui::Ui, finding: &Finding) -> Option<Click> {
             ui,
             |ui| {
                 severity_sign(ui, finding.severity);
-                ui.add(Label::new(finding.text.as_str()).wrap());
+                ui.add(Label::new(RichText::new(sentence(&finding.text)).color(TEXT)).wrap());
             },
             |ui| {
                 let button = Button::fix(finding.fix.as_ref()?);

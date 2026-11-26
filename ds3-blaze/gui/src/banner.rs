@@ -1,9 +1,10 @@
 //! The sentence on top of a mode's screen: where things stand and the one
 //! thing to do next.
 
-use crate::row::{self, GREEN, ORANGE, RED};
+use crate::row;
 use crate::step::{Button, Click};
-use eframe::egui::{self, Label, Margin, RichText, Stroke};
+use crate::theme::{self, ACCENT, GREEN, ORANGE, RED, STRONG, TEXT};
+use eframe::egui::{self, Color32, Label, Margin, RichText, pos2};
 
 /// How a banner is coloured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +78,9 @@ impl Banner {
     }
 }
 
+/// Width of the bar down a banner's left side, in points.
+const STRIPE: f32 = 4.0;
+
 /// Draws `banner` across the width and returns the click its button gave;
 /// `input` draws the guest's address field under the text when the banner
 /// holds it.
@@ -85,58 +89,62 @@ pub fn show(
     banner: &Banner,
     input: impl FnOnce(&mut egui::Ui),
 ) -> Option<Click> {
-    let background = ui.visuals().faint_bg_color;
-    let (fill, stroke) = match banner.tone {
-        Tone::Neutral => (background, ui.visuals().widgets.noninteractive.bg_stroke),
-        Tone::Success => tinted(background, GREEN),
-        Tone::Warning => tinted(background, ORANGE),
-        Tone::Failure => tinted(background, RED),
-    };
+    let colour = tone_colour(banner.tone);
     let mut click = None;
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(10.0)
-        .inner_margin(Margin::symmetric(18, 16))
+    let frame = theme::card()
+        .fill(theme::SURFACE.lerp_to_gamma(colour, 0.07))
+        .inner_margin(Margin {
+            left: 22,
+            right: 18,
+            top: 18,
+            bottom: 18,
+        })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             let (_, button) = egui::Sides::new().shrink_left().show(
                 ui,
                 |ui| {
                     ui.vertical(|ui| {
-                        let text = RichText::new(&banner.text)
-                            .size(18.0)
-                            .color(ui.visuals().strong_text_color());
+                        let text = RichText::new(&banner.text).size(20.0).color(STRONG);
                         ui.add(Label::new(text).wrap());
                         if let Some(detail) = &banner.detail {
-                            ui.add(Label::new(RichText::new(detail).weak()).wrap());
+                            ui.add_space(2.0);
+                            ui.add(Label::new(RichText::new(detail).color(TEXT)).wrap());
                         }
                         if banner.input {
-                            ui.add_space(6.0);
+                            ui.add_space(10.0);
                             input(ui);
                         }
                     });
                 },
                 |ui| {
                     if banner.spinner {
-                        ui.add(egui::Spinner::new().size(22.0));
+                        ui.add(egui::Spinner::new().size(22.0).color(ACCENT));
                         return None;
                     }
                     let action = banner.action.as_ref()?;
-                    row::action(ui, action, 36.0).then(|| action.click.clone())
+                    row::main_action(ui, action, 38.0).then(|| action.click.clone())
                 },
             );
             click = button;
         });
+    let rect = frame.response.rect;
+    let stripe = egui::Rect::from_min_max(
+        pos2(rect.left() + 9.0, rect.top() + 16.0),
+        pos2(rect.left() + 9.0 + STRIPE, rect.bottom() - 16.0),
+    );
+    ui.painter().rect_filled(stripe, 2, colour);
     click
 }
 
-/// Returns the fill and the border of a banner coloured `colour`.
-fn tinted(background: egui::Color32, colour: egui::Color32) -> (egui::Color32, Stroke) {
-    (
-        background.lerp_to_gamma(colour, 0.14),
-        Stroke::new(1.0, colour.gamma_multiply(0.6)),
-    )
+/// Returns the colour of a banner's bar and tint.
+fn tone_colour(tone: Tone) -> Color32 {
+    match tone {
+        Tone::Neutral => ACCENT,
+        Tone::Success => GREEN,
+        Tone::Warning => ORANGE,
+        Tone::Failure => RED,
+    }
 }
 
 /// Returns how many things to fix `count` names, in the player's words.
