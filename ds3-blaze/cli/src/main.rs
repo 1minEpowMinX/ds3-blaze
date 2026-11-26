@@ -15,13 +15,15 @@ use ds3_blaze_core::players::Roster;
 use ds3_blaze_core::server::{self, DEFAULT_BLAZE_PORT, Server};
 use ds3_blaze_diag::fix;
 use ds3_blaze_diag::netcheck::{self, Finding, Fix, Own, Setup, Severity};
-use ds3_blaze_diag::p2pcheck;
+use ds3_blaze_diag::p2p::{self, Progress, Timing};
 
 use std::io;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+use tokio::sync::mpsc;
 
 /// Display name used when `--name` is not given.
 const DEFAULT_NAME: &str = "DS3Player";
@@ -134,11 +136,14 @@ struct P2pArgs {
     /// The other player's VPN address.
     #[arg(long, value_name = "IP")]
     peer: Ipv4Addr,
+    /// This PC's VPN address, as net-check takes it.
+    #[arg(long, value_name = "IP")]
+    address: Option<Ipv4Addr>,
     /// UDP port; the default is the game's P2P port.
-    #[arg(long, value_name = "PORT", default_value_t = p2pcheck::GAME_PORT)]
+    #[arg(long, value_name = "PORT", default_value_t = p2p::GAME_PORT)]
     port: u16,
     /// Longest run time in seconds.
-    #[arg(long, value_name = "N", default_value_t = p2pcheck::DEFAULT_SECONDS)]
+    #[arg(long, value_name = "N", default_value_t = p2p::DEFAULT_SECONDS)]
     seconds: u64,
 }
 
@@ -272,10 +277,16 @@ fn hosts(command: HostsCommand) -> io::Result<()> {
     Ok(())
 }
 
+/// What net-check found that the commands after it use.
+struct NetCheck {
+    problems: usize,
+    /// Names of the VPN adapters that are up besides this PC's.
+    other_vpn_adapters: Vec<String>,
+}
+
 /// Prints the local and route findings for traffic to `peer` from the adapter
-/// holding `address`, or from any VPN adapter without one, and fails when a
-/// finding is a problem.
-fn net_check(peer: Ipv4Addr, address: Option<Ipv4Addr>) -> io::Result<()> {
+/// holding `address`, or from any VPN adapter without one.
+fn net_check(peer: Ipv4Addr, address: Option<Ipv4Addr>) -> io::Result<NetCheck> {
     println!("network check for {peer} (reading Windows settings, a few seconds)");
     let records = netcheck::read(Some(peer))?;
     let own = address.map_or(Own::AnyVpn, Own::Address);
@@ -297,9 +308,80 @@ fn net_check(peer: Ipv4Addr, address: Option<Ipv4Addr>) -> io::Result<()> {
         "network check: {problems} problem(s), {} warning(s)",
         count(Severity::Warning)
     );
-    match problems {
+    Ok(NetCheck {
+        problems,
+        other_vpn_adapters: netcheck::other_vpn_adapters(&records, &own)
+            .into_iter()
+            .map(|adapter| adapter.name.clone())
+            .collect(),
+    })
+}
+
+/// Runs net-check and fails when a finding is a problem.
+fn net_check_command(peer: Ipv4Addr, address: Option<Ipv4Addr>) -> io::Result<()> {
+    match net_check(peer, address)?.problems {
         0 => Ok(()),
         n => Err(io::Error::other(format!("{n} problem(s) found"))),
+    }
+}
+
+/// Runs net-check, then the exchange with the other player, printing its
+/// progress and outcome; fails when a direction does not work.
+async fn p2p_check(args: P2pArgs) -> io::Result<()> {
+    // Problems net-check finds do not stop the exchange, which shows their
+    // effect.
+    let other_vpn_adapters = match net_check(args.peer, args.address) {
+        Ok(found) => found.other_vpn_adapters,
+        Err(err) => {
+            println!("network check failed to run: {err}");
+            Vec::new()
+        }
+    };
+    println!();
+    let socket = p2p::bind(args.port).await?;
+    let peer = SocketAddr::from((args.peer, args.port));
+    let timing = Timing {
+        limit: Duration::from_secs(args.seconds),
+        ..Timing::default()
+    };
+    let (sender, mut progress) = mpsc::unbounded_channel();
+    let print = async {
+        while let Some(event) = progress.recv().await {
+            match event {
+                Progress::Pinging { target, until } => println!(
+                    "UDP {}: pinging {target} for up to {} s; run the same check on the other PC now",
+                    target.port(),
+                    until
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .as_secs_f32()
+                        .round()
+                ),
+                Progress::PeerReachesThisPc => {
+                    println!("  ping from {peer} arrived: the other player reaches this PC")
+                }
+                Progress::ThisPcReachesPeer => {
+                    println!("  answer from {peer} arrived: this PC reaches the other player")
+                }
+            }
+        }
+    };
+    let (outcome, ()) = tokio::join!(p2p::exchange(socket, peer, timing, sender), print);
+    println!(
+        "sent {} pings, {} answered; {} pings received from the other player",
+        outcome.sent, outcome.answered, outcome.received
+    );
+    for stranger in &outcome.strangers {
+        println!(
+            "  packets also came from {stranger}, not from the other player: check their address"
+        );
+    }
+    let names: Vec<&str> = other_vpn_adapters.iter().map(String::as_str).collect();
+    match outcome.failure(&names) {
+        None => {
+            println!("both directions work over UDP {}", args.port);
+            Ok(())
+        }
+        Some(failure) => Err(io::Error::other(failure)),
     }
 }
 
@@ -425,16 +507,8 @@ async fn main() -> ExitCode {
         Command::Serve(args) => printing_log(serve(args)).await,
         Command::Hosts(command) => hosts(command),
         Command::Fix(command) => run_fix(command),
-        Command::NetCheck { peer, address } => net_check(peer, address),
-        Command::P2pCheck(args) => {
-            // Problems the check finds do not stop the exchange, which shows
-            // their effect.
-            if let Err(err) = net_check(args.peer, None) {
-                println!("{err}");
-            }
-            println!();
-            p2pcheck::run(args.peer, args.port, args.seconds).await
-        }
+        Command::NetCheck { peer, address } => net_check_command(peer, address),
+        Command::P2pCheck(args) => p2p_check(args).await,
         #[cfg(feature = "research")]
         Command::Proxy(args) => printing_log(run_proxy(args.ea_redirector)).await,
         #[cfg(feature = "research")]

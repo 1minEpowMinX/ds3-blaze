@@ -7,7 +7,7 @@
 //! PowerShell modules, read by [`SCRIPT`] as `|`-separated records and parsed
 //! into [`Records`]; both parts work on the parsed records only.
 
-use crate::p2pcheck::GAME_PORT;
+use crate::p2p::GAME_PORT;
 use crate::powershell;
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, UdpSocket};

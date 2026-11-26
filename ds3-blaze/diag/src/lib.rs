@@ -4,5 +4,5 @@
 
 pub mod fix;
 pub mod netcheck;
-pub mod p2pcheck;
+pub mod p2p;
 mod powershell;

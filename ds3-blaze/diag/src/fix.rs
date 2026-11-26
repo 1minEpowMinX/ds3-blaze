@@ -2,7 +2,7 @@
 //! network check; each needs administrator rights.
 
 use crate::netcheck::Fix;
-use crate::p2pcheck::GAME_PORT;
+use crate::p2p::GAME_PORT;
 use crate::powershell::{self, ACCESS_DENIED};
 use std::io;
 
