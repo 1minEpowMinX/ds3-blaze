@@ -1,4 +1,5 @@
-//! Client that runs a running `serve` instance through the game's login sequence.
+//! Client side of the game's sequence against a ds3-blaze server: redirector,
+//! login, a room with a second client joining, matchmaking, QoS over HTTP and UDP.
 
 use blaze_ssl_async::BlazeStream;
 use ds3_blaze_core::components::{

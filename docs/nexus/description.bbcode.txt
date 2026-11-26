@@ -58,8 +58,6 @@ Then the folder can be deleted. While the entry is in place, that PC reaches onl
 [list]
 [*][b]p2p-check[/b] shows in which direction packets do not arrive, and why: the wrong network adapter, a VPN network that Windows files as [i]Public[/i] (where inbound traffic is blocked), or a firewall rule. Fix what it reports and run it again on both PCs.[/*]
 [*]If Windows asks whether to let [i]ds3-blaze.exe[/i] through the firewall, allow it.[/*]
-[*]The guest can test the whole path to the host's server without starting the game:
-[code].\ds3-blaze.exe selftest --host <host's VPN address>[/code][/*]
 [*]The server writes a log to the [i]logs[/i] folder next to it, showing how far each player got. Logs contain friend lists and IP addresses: if you attach one to a bug report, send it privately rather than posting it.[/*]
 [/list]
 [size=6][b]Known limitations[/b][/size]

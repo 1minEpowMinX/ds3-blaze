@@ -23,6 +23,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_util::codec::Framed;
+use tokio_util::sync::CancellationToken;
 
 /// Server-wide settings and state shared by all sessions.
 pub struct Config {
@@ -71,11 +72,19 @@ impl Config {
     }
 }
 
-/// Accepts sessions on `bind` until the listener fails, closing connections
-/// from addresses the configuration does not admit.
-pub async fn run(bind: SocketAddr, config: Arc<Config>) -> std::io::Result<()> {
-    let listener = TcpListener::bind(bind).await?;
-    log!("blaze", "listening on {bind} (plain TCP)");
+/// Accepts sessions on `listener` until it fails, closing connections from
+/// addresses the configuration does not admit; each session ends when `stop`
+/// is cancelled.
+pub async fn serve(
+    listener: TcpListener,
+    config: Arc<Config>,
+    stop: CancellationToken,
+) -> std::io::Result<()> {
+    log!(
+        "blaze",
+        "listening on {} (plain TCP)",
+        listener.local_addr()?
+    );
     if config.only_listed {
         log!(
             "blaze",
@@ -91,7 +100,12 @@ pub async fn run(bind: SocketAddr, config: Arc<Config>) -> std::io::Result<()> {
             continue;
         }
         let id = next_id.fetch_add(1, Ordering::Relaxed);
-        tokio::spawn(serve_session(tcp, peer, id, config.clone()));
+        tokio::spawn(stop.clone().run_until_cancelled_owned(serve_session(
+            tcp,
+            peer,
+            id,
+            config.clone(),
+        )));
     }
 }
 

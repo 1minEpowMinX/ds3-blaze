@@ -66,7 +66,7 @@ jobs:
         run: ./tools/check-clean.ps1
 
   build:
-    name: Build and self-test
+    name: Build and test
     runs-on: windows-latest
     defaults:
       run:
@@ -85,24 +85,5 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Build
         run: cargo build --locked
-      - name: Unit tests
+      - name: Tests
         run: cargo test --locked
-      - name: Self-test against a local server
-        shell: pwsh
-        run: |
-          $server = Start-Process -FilePath target/debug/ds3-blaze.exe -ArgumentList serve -PassThru -NoNewWindow
-          try {
-            # serve binds its listeners at start-up; the redirector port shows it is up.
-            $deadline = (Get-Date).AddSeconds(30)
-            while (-not (Test-NetConnection 127.0.0.1 -Port 42127 -InformationLevel Quiet -WarningAction SilentlyContinue)) {
-              if ($server.HasExited -or (Get-Date) -gt $deadline) { throw 'serve did not start' }
-              Start-Sleep -Milliseconds 500
-            }
-            ./target/debug/ds3-blaze.exe selftest
-            if ($LASTEXITCODE -ne 0) {
-              Get-Content logs/*.log
-              throw "selftest failed with exit code $LASTEXITCODE"
-            }
-          } finally {
-            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
-          }

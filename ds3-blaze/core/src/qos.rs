@@ -7,9 +7,10 @@ use crate::log;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio_util::sync::CancellationToken;
 
 /// Ports of the QoS service.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ports {
     pub http: u16,
     pub udp: u16,
@@ -26,19 +27,26 @@ const LATENCY_PROBE_SIZE: usize = 20;
 /// reused verbatim; their meaning is unknown.
 const BANDWIDTH_REPLY_TAIL: [u8; 8] = [0x05, 0xb8, 0xd8, 0x00, 0x53, 0xad, 0x00, 0x00];
 
-/// Runs the HTTP and UDP parts on `bind` until either fails.
+/// Serves the HTTP part on `http` and the UDP probe echo on `udp` until either
+/// fails; each HTTP connection ends when `stop` is cancelled.
 ///
 /// `advertise` is the address written into the XML as the probe target.
-pub async fn run(bind: Ipv4Addr, advertise: Ipv4Addr, ports: Ports) -> std::io::Result<()> {
-    let http = TcpListener::bind((bind, ports.http)).await?;
-    let udp = UdpSocket::bind((bind, ports.udp)).await?;
+pub async fn serve(
+    http: TcpListener,
+    udp: UdpSocket,
+    advertise: Ipv4Addr,
+    stop: CancellationToken,
+) -> std::io::Result<()> {
+    let udp_addr = udp.local_addr()?;
     log!(
         "qos",
-        "listening on {bind}:{} (HTTP) and {bind}:{} (UDP)",
-        ports.http,
-        ports.udp
+        "listening on {} (HTTP) and {udp_addr} (UDP)",
+        http.local_addr()?
     );
-    tokio::try_join!(accept_http(http, advertise, ports.udp), echo(udp))?;
+    tokio::try_join!(
+        accept_http(http, advertise, udp_addr.port(), stop),
+        echo(udp)
+    )?;
     Ok(())
 }
 
@@ -46,10 +54,14 @@ async fn accept_http(
     listener: TcpListener,
     advertise: Ipv4Addr,
     udp_port: u16,
+    stop: CancellationToken,
 ) -> std::io::Result<()> {
     loop {
         let (tcp, peer) = listener.accept().await?;
-        tokio::spawn(serve_http(tcp, peer, advertise, udp_port));
+        tokio::spawn(
+            stop.clone()
+                .run_until_cancelled_owned(serve_http(tcp, peer, advertise, udp_port)),
+        );
     }
 }
 

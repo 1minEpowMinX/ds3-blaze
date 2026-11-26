@@ -75,13 +75,7 @@ If the guest does not get in, the `logs\` folder shows how far the server got. T
    powershell -ExecutionPolicy Bypass -File .\scripts\hosts.ps1 -Enable -Address <host's VPN address>
    ```
 
-2. Optionally, test the whole path to the host's server without the game:
-
-   ```powershell
-   .\ds3-blaze.exe selftest --host <host's VPN address>
-   ```
-
-3. Start the game and go online in co-op. Then either:
+2. Start the game and go online in co-op. Then either:
 
    - pick quick match to join the host's public game. The server puts you into it as soon as it exists, retrying for as long as the game's search lasts, so you may start searching a little before the host's game is up;
    - or accept the host's invite in the EA App. The server knows players by the addresses they connect from, not by EA account, so it matches the invite to the host only while the two of you are the only players on it.
@@ -100,7 +94,7 @@ When a player logs in, the game sends the server the EA login token it got from 
 
 Each feature or fix is developed on its own branch named `<type>/<name>`, where `<type>` is one of the commit types below, and lands on `main` through a merge (`git merge --no-ff`); nothing is committed to `main` directly.
 
-CI on GitHub Actions checks every push to any branch and every pull request into `main`: `tools\check-commits.ps1` over the branch name and the subjects of the commits the branch adds, `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with warnings as errors, a build and `selftest` against a local `serve`. A newer push to the same branch cancels the check still running for it. Pushing an annotated tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive, attests its build provenance and opens a draft release. Its notes are rendered by [git-cliff](https://git-cliff.org) from `cliff.toml`: the tag's message comes first as the summary, followed by the commits since the previous tag. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), with the types listed in `$Types` of `tools\check-commits.ps1`; a `Deploy:` trailer lands under "Action required" in the notes. With git-cliff installed, `git cliff --unreleased` previews the next release's notes.
+CI on GitHub Actions checks every push to any branch and every pull request into `main`: `tools\check-commits.ps1` over the branch name and the subjects of the commits the branch adds, `tools\check-clean.ps1` over the tracked files, then `cargo fmt`, `cargo clippy` with warnings as errors, a build and the tests, among them a protocol test that runs the game's client sequence against a server started inside the test. A newer push to the same branch cancels the check still running for it. Pushing an annotated tag `v<version>` that matches `ds3-blaze/Cargo.toml` runs the same checks, packs the archive, attests its build provenance and opens a draft release. Its notes are rendered by [git-cliff](https://git-cliff.org) from `cliff.toml`: the tag's message comes first as the summary, followed by the commits since the previous tag. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), with the types listed in `$Types` of `tools\check-commits.ps1`; a `Deploy:` trailer lands under "Action required" in the notes. With git-cliff installed, `git cliff --unreleased` previews the next release's notes.
 
 The same checks run locally once the hooks are enabled in a clone: the repository check before each commit, and the naming check on each commit message, which also refuses a commit on `main` other than one that concludes a merge:
 
