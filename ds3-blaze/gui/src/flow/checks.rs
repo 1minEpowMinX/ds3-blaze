@@ -23,16 +23,21 @@ pub fn sentence(text: &str) -> String {
 /// or ended well, makes the number of issues among them its summary and the
 /// step a warning.
 ///
-/// A step that failed moves its summary into the details, after the
-/// findings.
+/// A waiting step takes the findings only when they hold an issue. A step
+/// that failed moves its summary into the details, after the findings.
 pub fn add_findings(step: &mut Step, findings: &[Finding]) {
-    let mut lines = details(findings);
-    lines.append(&mut step.details);
-    step.details = lines;
     let issues = findings
         .iter()
         .filter(|finding| matches!(finding.severity, Severity::Warning | Severity::Problem))
         .count();
+    // Clean findings on a step that has not run would read as its own
+    // results.
+    if issues == 0 && step.status == Status::Waiting {
+        return;
+    }
+    let mut lines = details(findings);
+    lines.append(&mut step.details);
+    step.details = lines;
     if issues == 0 || matches!(step.status, Status::Running | Status::Ok) {
         return;
     }
@@ -103,6 +108,21 @@ mod tests {
         add_findings(&mut working, &findings);
         assert_eq!(working.summary, "both ways");
         assert_eq!(working.details.len(), 2);
+    }
+
+    #[test]
+    fn a_waiting_step_takes_findings_only_with_an_issue_among_them() {
+        let mut waiting = Step::new("Direct link");
+        add_findings(
+            &mut waiting,
+            &[finding(Severity::Ok), finding(Severity::Ok)],
+        );
+        assert_eq!(waiting, Step::new("Direct link"));
+
+        let mut running = Step::new("Direct link");
+        running.status = Status::Running;
+        add_findings(&mut running, &[finding(Severity::Ok)]);
+        assert_eq!(running.details.len(), 1);
     }
 
     #[test]

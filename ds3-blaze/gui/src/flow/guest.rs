@@ -502,7 +502,7 @@ impl GuestFlow {
     fn draw_link(&mut self, now: Instant) {
         let mut step = self.link.step(WAITING[LINK], DONE[LINK], now, SILENT_HINT);
         checks::add_findings(&mut step, &self.findings);
-        if self.link.running() || !step.details.is_empty() {
+        if self.link.started() {
             step.note = Some(LINK_NOTE.into());
         }
         if let Some(error) = &self.fix_error {
@@ -809,6 +809,15 @@ mod tests {
         assert_eq!(link.status, Status::Warning);
         assert_eq!(link.summary, "1 thing to fix on this PC");
         assert_eq!(link.details.len(), 2);
+    }
+
+    #[test]
+    fn a_clean_network_leaves_the_link_step_waiting_as_before() {
+        let mut flow = flow();
+        let now = Instant::now();
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        flow.apply(clean_network(), now);
+        assert_eq!(flow.steps()[LINK], flow_at(now).steps()[LINK]);
     }
 
     #[test]

@@ -140,7 +140,7 @@ The banner is a pure function of a mode's state (`GuestFlow::banner`, `HostFlow:
 
 ### Step rows
 
-A row is a sign (waiting, running, done, needs a fix, failed), one sentence in the player's words and, when it has details, a chevron. A waiting row says what the step will do; a done row says what is now true. Clicking a row opens its panel: the technical lines (the hosts entry, the listeners, the `reach` stages, the exchange counters), the findings with one button per fix, and the step's buttons such as "Check again". Rows stay as the player left them, apart from the setup list opening by itself.
+A row is a sign (waiting, running, done, needs a fix, failed), one sentence in the player's words and, when it has details, a chevron. A waiting row says what the step will do; a done row says what is now true. Clicking a row opens its panel: the technical lines (the hosts entry, the listeners, the `reach` stages, the exchange counters), the findings with one button per fix, and the step's buttons such as "Check again". Rows stay as the player left them, apart from the setup list opening by itself. The direct link's row takes the findings of the network check before its own check only when one of them needs a fix, so a row that has not run shows no results.
 
 A mode is a list of steps. Each step owns its state, its sentence and its panel; the rendering only reads them, so the step logic has unit tests without a window.
 

@@ -35,6 +35,11 @@ impl Link {
         self.running
     }
 
+    /// Returns whether an exchange runs or has ended.
+    pub fn started(&self) -> bool {
+        self.running || self.result.is_some()
+    }
+
     /// Returns whether the last exchange ended with both directions working.
     pub fn works(&self) -> bool {
         !self.running && matches!(self.result, Some(Ok(_))) && self.failure.is_none()
