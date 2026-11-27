@@ -145,4 +145,4 @@ git clone https://github.com/jacobtread/blaze-ssl-async vendor/blaze-ssl-async
 
 [MIT](LICENSE). Dead Space 3 and Blaze belong to Electronic Arts. This project is not affiliated with EA and contains no game files.
 
-[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) holds the licenses of the adapted Pocket Relay code and of every crate compiled into the executables. `tools\notices.ps1` regenerates it from `Cargo.lock` with [cargo-about](https://github.com/EmbarkStudios/cargo-about) after a dependency change; CI fails while it is out of date.
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) holds the licenses of the Pocket Relay and BlazeSDK material and of every crate compiled into the executables. `tools\notices.ps1` regenerates it from `Cargo.lock` with [cargo-about](https://github.com/EmbarkStudios/cargo-about) after a dependency change; CI fails while it is out of date.
