@@ -19,7 +19,7 @@ Protocol analysis, traffic captures and the work plan: [docs/](docs/README.md).
 
 ## Getting it
 
-Release archives are on the repository's Releases page. Each holds `ds3-blaze.exe`, the window that walks both players through hosting and joining, `ds3-blaze-cli.exe`, the command line, this README and the license; the commands below run from the unpacked folder.
+Release archives are on the repository's Releases page. Each holds `ds3-blaze.exe`, the window that walks both players through hosting and joining, `ds3-blaze-cli.exe`, the command line, this README, the license and the third-party notices; the commands below run from the unpacked folder.
 
 GitHub Actions builds every release archive and signs a build provenance attestation for it and for both executables inside. With the [GitHub CLI](https://cli.github.com/) installed, either file can be checked against this repository's release workflow; the command fails for a file that workflow did not produce:
 
