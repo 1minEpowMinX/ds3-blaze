@@ -682,6 +682,15 @@ impl eframe::App for App {
         let mut mode = ModeInput::default();
         let busy = self.busy;
         if let Screen::Start(form) = &mut self.screen {
+            egui::Panel::bottom("about")
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme::BACKGROUND)
+                        .inner_margin(Margin::symmetric(16, 12)),
+                )
+                .show_separator_line(false)
+                .resizable(false)
+                .show(ui, |ui| theme::column(ui, view::start::about));
             central(ui, |ui| {
                 start_click = view::start::show(form, ui, busy)
                     .map(|click| (click, form.name.clone(), form.address));

@@ -91,6 +91,26 @@ pub fn show(form: &mut Form, ui: &mut egui::Ui, busy: bool) -> Option<StartClick
     click
 }
 
+/// Draws the version and the commit the window was built from, with a link
+/// to the source code.
+pub fn about(ui: &mut egui::Ui) {
+    let version = format!("ds3-blaze {}", env!("CARGO_PKG_VERSION"));
+    let built = match env!("DS3_BLAZE_COMMIT") {
+        "" => version,
+        commit => format!("{version}, commit {commit}"),
+    };
+    let url = env!("CARGO_PKG_REPOSITORY");
+    let short = url.trim_start_matches("https://");
+    egui::Sides::new().show(
+        ui,
+        |ui| ui.label(RichText::new(built).small().color(WEAK)),
+        |ui| {
+            ui.hyperlink_to(RichText::new(short).small(), url)
+                .on_hover_text("Source code");
+        },
+    );
+}
+
 /// Draws the chosen address with Change, or why none is chosen, and the
 /// list while it is open; returns why no address is chosen and puts a
 /// request to read the adapters again in `click`.

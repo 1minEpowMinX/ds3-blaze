@@ -105,6 +105,8 @@ The player's own VPN address is chosen here once, for both modes. The first addr
 
 A name the rule refuses says why under the name field, and the cards stay disabled. Each card is one button, for the keyboard and screen readers as well as the mouse. When the hosts file holds ds3-blaze entries while no server or connection is active, as after a crash, a notice offers "Restore EA servers"; otherwise the screen says nothing about the hosts file.
 
+A line at the foot of the window gives the version, the commit the build comes from (set by `gui/build.rs`, left out of a build outside a git checkout) and a link to the repository the workspace manifest names.
+
 ### Mode screen
 
 A mode's screen holds, from top to bottom:

@@ -7,6 +7,7 @@ version = "0.2.0"
 edition = "2024"
 license = "MIT"
 publish = false
+repository = "https://github.com/1minEpowMinX/ds3-blaze"
 
 [workspace.dependencies]
 # SSLv3 with the ProtoSSL bypass certificate (feature "blaze-cert", on by default)
