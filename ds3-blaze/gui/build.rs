@@ -1,11 +1,27 @@
 //! Sets `DS3_BLAZE_COMMIT`, `DS3_BLAZE_COMMIT_SHORT` and
 //! `DS3_BLAZE_COMMIT_DATE` to the full hash, the short hash and the date of the
-//! commit being built, or each to nothing outside a git checkout.
+//! commit being built, or each to nothing outside a git checkout, and embeds
+//! [`ICON`] in the Windows executable.
 
 use std::path::Path;
 use std::process::Command;
 
+/// Icon of the executable.
+const ICON: &str = "../assets/ds3-blaze.ico";
+
 fn main() {
+    println!("cargo:rerun-if-changed={ICON}");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        winresource::WindowsResource::new()
+            .set_icon(ICON)
+            // Task Manager shows the description instead of the file name, so
+            // it stays a short name.
+            .set("FileDescription", "ds3-blaze")
+            .set("ProductName", "ds3-blaze")
+            .compile()
+            .expect("embedding the icon failed");
+    }
+
     let log = git(&["log", "-1", "--format=%H %h %cs"]).unwrap_or_default();
     let mut fields = log.split(' ');
     for name in ["COMMIT", "COMMIT_SHORT", "COMMIT_DATE"] {

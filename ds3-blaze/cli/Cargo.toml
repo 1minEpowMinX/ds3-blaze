@@ -27,3 +27,6 @@ tdf = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
+
+[build-dependencies]
+winresource.workspace = true

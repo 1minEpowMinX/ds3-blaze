@@ -21,8 +21,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 windows-sys = "0.61"
 eframe = "0.37"
+# The version eframe's window handles come from.
+raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+# Embeds the icon and version resource in the Windows executables (build.rs).
+winresource = "0.1"
 
 [profile.release]
 # Symbols are stripped from the exe; the MSVC linker still writes a .pdb beside
