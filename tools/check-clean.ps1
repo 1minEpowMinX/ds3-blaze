@@ -4,7 +4,7 @@ Fails when tracked or staged files include logs, captures, game files, keys or p
 
 .DESCRIPTION
 Checks each file against $ForbiddenPaths and $MaxBytes, and searches text files
-for e-mail addresses not listed in $AllowedEmails. When .git\info\sensitive.txt
+other than $EmailExemptFiles for e-mail addresses not listed in $AllowedEmails. When .git\info\sensitive.txt
 exists, every non-empty line of it that does not start with '#' is searched
 for as a literal string as well; the file lives inside .git and is never
 committed, so it can hold a persona name or a home IP address.
@@ -31,6 +31,9 @@ $ForbiddenPaths = @(
 )
 $MaxBytes = 1MB
 $AllowedEmails = @('dirtysock-contact@ea.com', 'noreply@anthropic.com')
+# Files whose e-mail addresses are not searched for. THIRD_PARTY_NOTICES
+# reproduces upstream license texts, which carry their authors' addresses.
+$EmailExemptFiles = @('THIRD_PARTY_NOTICES')
 $EmailPattern = '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
 $SensitiveFile = '.git/info/sensitive.txt'
 
@@ -55,7 +58,9 @@ foreach ($file in $files) {
 }
 
 # git grep --cached searches the index; -I skips binary files.
-$hits = @(git grep --cached -I -n -o -E $EmailPattern -- $files)
+$emailFiles = @($files | Where-Object { $EmailExemptFiles -notcontains $_ })
+$hits = @()
+if ($emailFiles.Count -gt 0) { $hits = @(git grep --cached -I -n -o -E $EmailPattern -- $emailFiles) }
 foreach ($hit in $hits) {
     $email = ($hit -split ':', 3)[2]
     if ($AllowedEmails -notcontains $email.ToLowerInvariant()) {

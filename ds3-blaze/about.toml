@@ -1,0 +1,30 @@
+# cargo-about: the crates compiled into the release executables and the
+# licenses THIRD_PARTY_NOTICES reproduces for them. tools/notices.ps1 runs it.
+
+# For a crate offered under several licenses, the first one listed here that
+# the crate allows is the one reproduced.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "Zlib",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "BSL-1.0",
+    "0BSD",
+    "Unlicense",
+    # The fonts egui embeds.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+
+# Release archives hold Windows x64 executables only.
+targets = ["x86_64-pc-windows-msvc"]
+
+# Build scripts and test helpers are not part of the executables.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# The workspace's own crates are under LICENSE.
+private = { ignore = true }
