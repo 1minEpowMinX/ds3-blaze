@@ -20,7 +20,17 @@ futures = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 windows-sys = "0.61"
-eframe = "0.37"
+# OpenGL draws the window: wgpu loads the driver of every graphics card in the
+# machine with its shader compiler, and DX12 alone weighs even more.
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "glow",
+    "links",
+    # The arrows and the UAC shield come from the fonts of the system.
+    "system_fonts",
+] }
 # The version eframe's window handles come from.
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"] }
