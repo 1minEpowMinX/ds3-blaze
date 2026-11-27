@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
 Builds ds3-blaze in release mode and packs the files a player needs into a zip:
-the window, the command line, the README and the license.
+the window, the command line, the README, the license and the third-party notices.
 
 .DESCRIPTION
 The archive holds the files listed in $entries, laid out so that the commands
@@ -66,6 +66,7 @@ foreach ($bin in $window, $cli) {
 }
 $entries['README.md'] = Join-Path $Root 'README.md'
 $entries['LICENSE'] = Join-Path $Root 'LICENSE'
+$entries['THIRD_PARTY_NOTICES'] = Join-Path $Root 'THIRD_PARTY_NOTICES'
 
 $name = "$window-$version-windows-x64"
 New-Item -ItemType Directory -Force $OutDir | Out-Null
