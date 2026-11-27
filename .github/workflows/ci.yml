@@ -65,6 +65,19 @@ jobs:
         shell: pwsh
         run: ./tools/check-clean.ps1
 
+  notices:
+    name: Third-party notices
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9
+      - name: Check THIRD_PARTY_NOTICES
+        shell: pwsh
+        run: ./tools/notices.ps1 -Check
+
   build:
     name: Build and test
     runs-on: windows-latest
