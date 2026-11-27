@@ -193,18 +193,24 @@ fn chevron(ui: &mut egui::Ui, open: Option<bool>) {
 /// A button that brings up the administrator prompt has a shield before its
 /// label and says so on hover.
 pub fn action(ui: &mut egui::Ui, button: &Button, height: f32) -> bool {
-    draw(ui, button, height, false)
+    draw(ui, button, button.label, height, false)
 }
 
 /// Draws `button` as the one thing to press next, filled with the accent,
 /// and returns whether it was pressed.
 pub fn main_action(ui: &mut egui::Ui, button: &Button, height: f32) -> bool {
-    draw(ui, button, height, true)
+    draw(ui, button, button.label, height, true)
 }
 
-/// Draws `button`, filled with the accent when `main`, and returns whether
-/// it was pressed.
-fn draw(ui: &mut egui::Ui, button: &Button, height: f32, main: bool) -> bool {
+/// Draws `button` like [`main_action`] but saying `label`, as wide as its own
+/// label would make it, and returns whether it was pressed.
+pub fn main_action_saying(ui: &mut egui::Ui, button: &Button, label: &str, height: f32) -> bool {
+    draw(ui, button, label, height, true)
+}
+
+/// Draws `button` saying `label`, filled with the accent when `main`, and
+/// returns whether it was pressed.
+fn draw(ui: &mut egui::Ui, button: &Button, label: &str, height: f32, main: bool) -> bool {
     let font_id = egui::TextStyle::Button.resolve(ui.style());
     let shield = button.elevates.then(|| {
         let colour = if button.enabled() { ACCENT } else { GREY };
@@ -219,23 +225,35 @@ fn draw(ui: &mut egui::Ui, button: &Button, height: f32, main: bool) -> bool {
         let ink = shield.mesh_bounds;
         (if main { disc(ink) } else { ink.width() }) + SHIELD_GAP
     });
-    let mut job = LayoutJob::default();
-    job.append(
-        button.label,
-        lead,
-        TextFormat {
-            font_id,
-            // The placeholder takes the button's own text colour.
-            color: if main {
-                ON_ACCENT
-            } else {
-                Color32::PLACEHOLDER
+    let job_saying = |text: &str| {
+        let mut job = LayoutJob::default();
+        job.append(
+            text,
+            lead,
+            TextFormat {
+                font_id: font_id.clone(),
+                // The placeholder takes the button's own text colour.
+                color: if main {
+                    ON_ACCENT
+                } else {
+                    Color32::PLACEHOLDER
+                },
+                ..TextFormat::default()
             },
-            ..TextFormat::default()
-        },
-    );
-    let label_width = ui.painter().layout_job(job.clone()).size().x;
-    let padding = theme::button_padding(ui, label_width);
+        );
+        job
+    };
+    let job = job_saying(label);
+    let shown = ui.painter().layout_job(job.clone()).size().x;
+    // A button saying something else for a moment keeps its own width, so
+    // nothing beside it moves.
+    let own = if label == button.label {
+        shown
+    } else {
+        ui.painter().layout_job(job_saying(button.label)).size().x
+    };
+    let width = shown.max(own);
+    let padding = theme::button_padding(ui, width) + (width - shown) / 2.0;
     let mut widget = egui::Button::new(job).min_size(vec2(0.0, height));
     if main {
         widget = widget.fill(ACCENT).stroke(Stroke::NONE);

@@ -136,7 +136,7 @@ The banner is a pure function of a mode's state (`GuestFlow::banner`, `HostFlow:
 | everything done: "Ready: start Dead Space 3 and choose online co-op" | serving, nobody connected: "Waiting for friends", the address, "Copy address" |
 | | players connected: "Playing with" their names, "Copy address" |
 
-"Fix it" applies every fix the findings offer in one elevated run of `fix several`, so the player sees one administrator prompt. The banner's button is the only place "Connect", "Start server" and "Fix it" appear; the rows do not repeat it.
+"Fix it" applies every fix the findings offer in one elevated run of `fix several`, so the player sees one administrator prompt. The banner's button is the only place "Connect", "Start server" and "Fix it" appear; the rows do not repeat it. "Copy address" says "Copied" for a moment after a click, at its own width.
 
 ### Step rows
 
