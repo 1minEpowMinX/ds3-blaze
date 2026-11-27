@@ -7,6 +7,7 @@
 mod app;
 mod elevate;
 mod flow;
+mod icon;
 #[cfg(debug_assertions)]
 mod preview;
 mod run;
@@ -25,6 +26,9 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ds3-blaze")
+            // An empty icon keeps eframe from setting the egui logo, which
+            // would replace the one `icon::apply` sets.
+            .with_icon(egui::IconData::default())
             .with_inner_size(WINDOW_SIZE)
             .with_min_inner_size(MIN_SIZE),
         ..Default::default()
@@ -33,6 +37,7 @@ fn main() -> eframe::Result {
         "ds3-blaze",
         options,
         Box::new(|creation| {
+            icon::apply(creation);
             ui::theme::apply(&creation.egui_ctx);
             Ok(Box::new(app::App::new()?))
         }),
