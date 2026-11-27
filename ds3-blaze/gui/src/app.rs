@@ -29,6 +29,10 @@ const TICK: Duration = Duration::from_secs(1);
 /// Colour of errors the window shows.
 const ERROR: egui::Color32 = theme::RED;
 
+/// Number of threads that run the server and the window's background work.
+// The server serves a handful of players, so a thread per core would idle.
+const WORKERS: usize = 2;
+
 /// What the window shows.
 enum Screen {
     Start(Form),
@@ -127,7 +131,10 @@ impl App {
             settings_path,
             screen: Screen::Start(form),
             save_error: None,
-            runtime: tokio::runtime::Runtime::new()?,
+            runtime: tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(WORKERS)
+                .enable_all()
+                .build()?,
             done_sender,
             done,
             server: None,
