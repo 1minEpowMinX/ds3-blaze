@@ -3,10 +3,12 @@
 use crate::flow::start::{Form, StartClick};
 use crate::flow::step::{BUSY, Button, Click};
 use crate::settings::Mode;
+use crate::ui::copied::{self, COPIED};
 use crate::ui::row;
 use crate::ui::theme::{self, ACCENT, ORANGE, RED, STRONG, TEXT, WEAK};
 use eframe::egui::{
-    self, Align, CursorIcon, Label, Layout, Margin, RichText, Sense, Stroke, pos2, vec2,
+    self, Align, CursorIcon, FontId, Label, Layout, Margin, RichText, Sense, Stroke, TextStyle,
+    pos2, vec2,
 };
 
 /// Draws `form` and returns what a click asked for; `busy` disables
@@ -92,23 +94,56 @@ pub fn show(form: &mut Form, ui: &mut egui::Ui, busy: bool) -> Option<StartClick
 }
 
 /// Draws the version and the commit the window was built from, with a link
-/// to the source code.
+/// to the source code; a click on the commit copies its full hash.
 pub fn about(ui: &mut egui::Ui) {
-    let version = format!("ds3-blaze {}", env!("CARGO_PKG_VERSION"));
-    let built = match env!("DS3_BLAZE_COMMIT") {
-        "" => version,
-        commit => format!("{version}, commit {commit}"),
-    };
     let url = env!("CARGO_PKG_REPOSITORY");
-    let short = url.trim_start_matches("https://");
     egui::Sides::new().show(
         ui,
-        |ui| ui.label(RichText::new(built).small().color(WEAK)),
         |ui| {
-            ui.hyperlink_to(RichText::new(short).small(), url)
-                .on_hover_text("Source code");
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+            ui.label(RichText::new(version).small().color(WEAK));
+            if !env!("DS3_BLAZE_COMMIT").is_empty() {
+                ui.label(RichText::new("·").small().color(WEAK));
+                commit(ui);
+            }
+        },
+        |ui| {
+            ui.hyperlink_to(RichText::new("GitHub ↗").small(), url)
+                .on_hover_text(url);
         },
     );
+}
+
+/// Draws the short hash of the commit the window was built from, which
+/// copies the full hash when clicked and says [`COPIED`] for a moment after.
+fn commit(ui: &mut egui::Ui) {
+    let full = env!("DS3_BLAZE_COMMIT");
+    let id = egui::Id::unique("commit copied at");
+    let size = TextStyle::Small.resolve(ui.style()).size;
+    // egui hides a tooltip on a click, so the label itself says it copied.
+    let hash = if copied::shown(ui, id) {
+        RichText::new(COPIED).color(WEAK)
+    } else {
+        RichText::new(env!("DS3_BLAZE_COMMIT_SHORT")).color(WEAK.gamma_multiply(0.5))
+    };
+    let date = env!("DS3_BLAZE_COMMIT_DATE");
+    let response = ui
+        .add(
+            Label::new(hash.font(FontId::monospace(size)))
+                .selectable(false)
+                .sense(Sense::click()),
+        )
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(format!(
+            "{full}
+Committed {date}
+Click to copy"
+        ));
+    if response.clicked() {
+        ui.ctx().copy_text(full.to_owned());
+        copied::mark(ui, id);
+    }
 }
 
 /// Draws the chosen address with Change, or why none is chosen, and the

@@ -105,7 +105,7 @@ The player's own VPN address is chosen here once, for both modes. The first addr
 
 A name the rule refuses says why under the name field, and the cards stay disabled. Each card is one button, for the keyboard and screen readers as well as the mouse. When the hosts file holds ds3-blaze entries while no server or connection is active, as after a crash, a notice offers "Restore EA servers"; otherwise the screen says nothing about the hosts file.
 
-A line at the foot of the window gives the version, the commit the build comes from (set by `gui/build.rs`, left out of a build outside a git checkout) and a link to the repository the workspace manifest names.
+A line at the foot of the window gives the version and the short hash of the commit the build comes from, with a link to the repository the workspace manifest names. The hash is dimmer than the version, shows the full hash and the commit date on hover and copies the full hash on a click; `gui/build.rs` sets all three and leaves them empty outside a git checkout, where the line gives the version alone.
 
 ### Mode screen
 

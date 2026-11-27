@@ -1,12 +1,17 @@
-//! Sets `DS3_BLAZE_COMMIT` to the short hash of the commit being built, or to
-//! nothing outside a git checkout.
+//! Sets `DS3_BLAZE_COMMIT`, `DS3_BLAZE_COMMIT_SHORT` and
+//! `DS3_BLAZE_COMMIT_DATE` to the full hash, the short hash and the date of the
+//! commit being built, or each to nothing outside a git checkout.
 
 use std::path::Path;
 use std::process::Command;
 
 fn main() {
-    let commit = git(&["rev-parse", "--short", "HEAD"]).unwrap_or_default();
-    println!("cargo:rustc-env=DS3_BLAZE_COMMIT={commit}");
+    let log = git(&["log", "-1", "--format=%H %h %cs"]).unwrap_or_default();
+    let mut fields = log.split(' ');
+    for name in ["COMMIT", "COMMIT_SHORT", "COMMIT_DATE"] {
+        let value = fields.next().unwrap_or_default();
+        println!("cargo:rustc-env=DS3_BLAZE_{name}={value}");
+    }
     // A commit moves the branch HEAD names, and a checkout changes HEAD itself;
     // a branch packed into packed-refs has no file of its own.
     let mut watched = vec![git(&["rev-parse", "--git-path", "HEAD"])];
