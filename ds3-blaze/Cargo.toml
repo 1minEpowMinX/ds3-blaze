@@ -42,5 +42,8 @@ winresource = "0.1"
 # Symbols are stripped from the exe; the MSVC linker still writes a .pdb beside
 # it, which tools/package.ps1 leaves out of the archive.
 strip = true
-lto = "thin"
+lto = "fat"
 codegen-units = 1
+# The window and a server for a few players spend their time waiting, so size
+# matters more than speed.
+opt-level = "s"
