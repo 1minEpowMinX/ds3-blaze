@@ -8,7 +8,7 @@ use crate::components::{
     association_lists as assoc, authentication as auth, game_manager as gm, user_sessions as us,
     util,
 };
-use crate::event;
+use crate::event::{self, Event};
 use crate::fire::{FireCodec, Frame, FrameType};
 use crate::game::{self, Games, Outbox};
 use crate::log;
@@ -121,7 +121,7 @@ pub async fn serve(
     let next_id = Arc::new(AtomicU32::new(1));
     loop {
         let (tcp, peer) = listener.accept().await?;
-        if !admit(&config, peer_ipv4(peer)) {
+        if !accept(&config, peer_ipv4(peer)) {
             log!("blaze", "{peer}: refused, address not listed");
             continue;
         }
@@ -134,6 +134,14 @@ pub async fn serve(
             stop.clone(),
         )));
     }
+}
+
+/// Announces a connection from `ip` with [`Event::Connection`], then returns
+/// whether the player book admits it, as [`admit`] does.
+fn accept(config: &Config, ip: Ipv4Addr) -> bool {
+    // The announcement comes first, so a refused guest counts as well.
+    event::send(Event::Connection(ip));
+    admit(config, ip)
 }
 
 /// Returns whether the player book admits a connection from `ip`, recording
@@ -1223,6 +1231,29 @@ mod tests {
         config.players.set_allowed(stranger, true);
         assert!(snapshot(&config).refused.is_empty());
         assert!(admit(&config, stranger));
+    }
+
+    #[test]
+    fn every_connection_is_announced_admitted_or_not() {
+        let config = config();
+        config.players.set_only_allowed(true);
+        let refused = Ipv4Addr::new(26, 0, 0, 13);
+        let admitted = Ipv4Addr::new(26, 0, 0, 14);
+        config.players.set_allowed(admitted, true);
+        let mut events = event::subscribe();
+        assert!(!accept(&config, refused));
+        assert!(accept(&config, admitted));
+        // Other tests in this process send events too; only this one uses
+        // these addresses.
+        let mut announced = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let Event::Connection(ip) = event
+                && (ip == refused || ip == admitted)
+            {
+                announced.push(ip);
+            }
+        }
+        assert_eq!(announced, [refused, admitted]);
     }
 
     #[tokio::test(start_paused = true)]

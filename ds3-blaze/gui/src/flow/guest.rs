@@ -1,0 +1,1158 @@
+//! The guest's steps: from the route to the host, through the hosts entry
+//! and the host's server, to the direct link and the game.
+
+use crate::flow::banner::{self, Banner, Tone};
+use crate::flow::checks;
+use crate::flow::link::Link;
+use crate::flow::network::Network;
+use crate::flow::step::{self, BUSY, Button, Click, Detail, NOTHING_TO_UNDO, Status, Step};
+use ds3_blaze_core::hosts::{self, State};
+use ds3_blaze_diag::netcheck::{Finding, Fix, Severity};
+use ds3_blaze_diag::p2p::{Outcome, Progress};
+use ds3_blaze_diag::reach::{Report, Stage};
+use std::io;
+use std::net::Ipv4Addr;
+use std::time::Instant;
+
+const NETWORK: usize = 0;
+const HOSTS: usize = 1;
+const REACH: usize = 2;
+const LINK: usize = 3;
+const GAME: usize = 4;
+
+/// What each step says while it waits, in the order the steps run.
+const WAITING: [&str; 5] = [
+    "Check this PC's network",
+    "Point the game at the host's PC",
+    "Ask the host's server",
+    "Check the direct link to the host",
+    "Start Dead Space 3 and choose online co-op",
+];
+
+/// What each step says once it is done.
+const DONE: [&str; 5] = [
+    "This PC's network is ready",
+    "The game goes to the host's PC",
+    "The host's server answers",
+    "The direct link works",
+    "Start Dead Space 3 and choose online co-op",
+];
+
+/// What a step says while the administrator prompt is awaited.
+pub const PROMPT: &str = "Waiting for Windows to ask for permission";
+
+/// What the open link step says beside "Check again".
+const LINK_NOTE: &str = "The host's window runs the same check at the same time";
+
+/// What the guest's link step adds when nothing arrived either way.
+const SILENT_HINT: &str = "if the host's game is running, it holds the port the check needs: \
+                           the host closes the game, then both press Check again";
+
+/// What reaches the guest's steps.
+#[derive(Debug)]
+pub enum GuestInput {
+    Click(Click),
+    Network(io::Result<Network>),
+    Hosts(io::Result<State>),
+    /// An elevated command line run ended, with its exit code.
+    Elevated(io::Result<i32>),
+    Reach(Vec<Report>),
+    Progress(Progress),
+    Exchange(io::Result<Outcome>),
+    /// Time passed; the countdown is drawn again.
+    Tick,
+}
+
+/// Work the guest's steps ask the window to carry out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GuestAction {
+    CheckNetwork {
+        own: Ipv4Addr,
+        peer: Ipv4Addr,
+    },
+    ReadHosts,
+    WriteHosts(Ipv4Addr),
+    Reach {
+        host: Ipv4Addr,
+        name: String,
+    },
+    Exchange {
+        peer: Ipv4Addr,
+    },
+    /// Applies the fixes in one elevated run.
+    ApplyFixes(Vec<Fix>),
+    RestoreHosts,
+}
+
+/// Which elevated command line run is awaited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Elevation {
+    Hosts,
+    Fix,
+    Restore,
+}
+
+/// The guest's steps and what they wait for.
+pub struct GuestFlow {
+    own: Ipv4Addr,
+    name: String,
+    host: Ipv4Addr,
+    steps: Vec<Step>,
+    link: Link,
+    /// What the network check found, shown with the direct link.
+    findings: Vec<Finding>,
+    /// The error of applying the last fix.
+    fix_error: Option<String>,
+    /// What the host's server said about the guest's name.
+    nickname: Option<Result<String, String>>,
+    other_vpn: Vec<String>,
+    elevation: Option<Elevation>,
+    /// The error of the last elevated run, shown if the state it was to
+    /// change did not change.
+    elevation_error: Option<String>,
+    /// Whether the hosts entry was written during this connection.
+    wrote_hosts: bool,
+    /// Whether the next hosts state is read after restoring the EA servers.
+    restoring: bool,
+}
+
+/// Returns the host's address `typed` names for a guest at `own`, or why
+/// it is refused.
+pub fn parse_host(typed: &str, own: Ipv4Addr) -> Result<Ipv4Addr, String> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Err("Type the host's VPN address".into());
+    }
+    match typed.parse::<Ipv4Addr>() {
+        Ok(address) if address != own && !address.is_unspecified() => Ok(address),
+        Ok(_) => Err("Type the host's VPN address, not your own".into()),
+        Err(_) => Err(format!("{typed} is not an IPv4 address")),
+    }
+}
+
+impl GuestFlow {
+    /// Returns the steps of a guest at `own` named `name` joining the host at
+    /// `host`, all waiting.
+    pub fn new(own: Ipv4Addr, name: String, host: Ipv4Addr) -> GuestFlow {
+        let mut flow = GuestFlow {
+            own,
+            name,
+            host,
+            steps: Vec::new(),
+            link: Link::default(),
+            findings: Vec::new(),
+            fix_error: None,
+            nickname: None,
+            other_vpn: Vec::new(),
+            elevation: None,
+            elevation_error: None,
+            wrote_hosts: false,
+            restoring: false,
+        };
+        flow.reset(Instant::now());
+        flow
+    }
+
+    /// Sets every step back to waiting.
+    fn reset(&mut self, now: Instant) {
+        self.steps = WAITING.iter().map(|waiting| Step::new(waiting)).collect();
+        self.link = Link::default();
+        self.findings.clear();
+        self.fix_error = None;
+        self.nickname = None;
+        self.draw_link(now);
+        self.draw_game();
+    }
+
+    /// Returns the button that ends the connection and restores the EA
+    /// servers.
+    pub fn exit(&self) -> Button {
+        Button::elevated("Disconnect", Click::RestoreHosts).disabled_by(if self.busy() {
+            Some(BUSY)
+        } else if self.steps[HOSTS].status == Status::Waiting {
+            Some(NOTHING_TO_UNDO)
+        } else {
+            None
+        })
+    }
+
+    /// Returns the banner for where the steps stand: the first rule that
+    /// matches, in the order of the spec's banner table.
+    pub fn banner(&self) -> Banner {
+        let connect = || Button::elevated("Connect", Click::Connect);
+        let failed = |index: &usize| self.steps[*index].status == Status::Failed;
+        // Before Connect and after Disconnect the hosts entry is not in place.
+        if !self.busy()
+            && self.steps[HOSTS].status == Status::Waiting
+            && !self.steps.iter().any(|step| step.status == Status::Failed)
+        {
+            return Banner::new(Tone::Neutral, "Join a friend")
+                .detail("Type the address the host's window shows")
+                .action(connect())
+                .with_input();
+        }
+        if self.link.running() {
+            return Banner::new(Tone::Neutral, self.steps[LINK].summary.clone())
+                .detail("Don't start the game until the check ends")
+                .spinning();
+        }
+        if self.busy() {
+            let doing = self
+                .steps
+                .iter()
+                .find(|step| step.status == Status::Running)
+                .map_or(PROMPT, |step| step.summary.as_str());
+            return Banner::new(Tone::Neutral, format!("Connecting to {}", self.host))
+                .detail(doing)
+                .spinning();
+        }
+        if let Some(index) = [NETWORK, HOSTS, REACH].into_iter().find(failed) {
+            let text = match index {
+                NETWORK => "This PC can't reach the host",
+                HOSTS => "The game can't be pointed at the host",
+                _ => "Can't reach the host's server",
+            };
+            // The address may be what went wrong, so it can be changed here.
+            return Banner::new(Tone::Failure, text)
+                .detail(self.steps[index].summary.clone())
+                .action(Button {
+                    label: "Check again",
+                    ..connect()
+                })
+                .with_input();
+        }
+        let fixes = step::fixes(&self.steps);
+        if !fixes.is_empty() {
+            return Banner::new(Tone::Warning, "Almost there")
+                .detail(banner::things_to_fix(fixes.len()))
+                .action(Button::elevated("Fix it", Click::FixAll));
+        }
+        if let Some(failure) = self.link.failure() {
+            let detail = if self.link.silent() {
+                SILENT_HINT
+            } else {
+                failure
+            };
+            return Banner::new(Tone::Warning, "The direct link failed")
+                .detail(checks::sentence(detail))
+                .action(Button::new("Check again", Click::CheckAgain));
+        }
+        if self.link.works() {
+            return Banner::new(
+                Tone::Success,
+                "Ready: start Dead Space 3 and choose online co-op",
+            );
+        }
+        Banner::new(Tone::Neutral, format!("Connecting to {}", self.host))
+    }
+
+    /// Returns the title of the guest's screen, with the host's address once
+    /// one is known.
+    pub fn title(&self) -> String {
+        if self.host.is_unspecified() {
+            "Joining a friend".into()
+        } else {
+            format!("Joining {}", self.host)
+        }
+    }
+
+    /// Returns why the player can't go back to the start screen, `None`
+    /// while they can.
+    pub fn stay(&self) -> Option<&'static str> {
+        self.busy().then_some(BUSY)
+    }
+
+    /// Returns whether every step is done, so the setup can fold into one
+    /// line.
+    pub fn setup_done(&self) -> bool {
+        self.steps.iter().all(|step| step.status == Status::Ok)
+    }
+
+    /// Returns the steps in the order they run.
+    pub fn steps(&self) -> &[Step] {
+        &self.steps
+    }
+
+    /// Returns whether a step runs or an elevated run is awaited.
+    pub fn busy(&self) -> bool {
+        self.elevation.is_some() || self.steps.iter().any(|step| step.status == Status::Running)
+    }
+
+    /// Takes `input` at `now` and returns the work it asks for.
+    pub fn apply(&mut self, input: GuestInput, now: Instant) -> Vec<GuestAction> {
+        self.take(input, now)
+    }
+
+    fn take(&mut self, input: GuestInput, now: Instant) -> Vec<GuestAction> {
+        match input {
+            GuestInput::Click(click) => self.click(click, now),
+            GuestInput::Network(network) => self.network(network, now),
+            GuestInput::Hosts(state) => self.hosts(state, now),
+            GuestInput::Elevated(result) => self.elevated(result, now),
+            GuestInput::Reach(reports) => self.reach(&reports, now),
+            GuestInput::Progress(progress) => {
+                self.link.progress(progress);
+                self.draw_link(now);
+                Vec::new()
+            }
+            GuestInput::Exchange(result) => {
+                self.link.finish(result, &self.other_vpn);
+                self.draw_link(now);
+                self.draw_game();
+                Vec::new()
+            }
+            GuestInput::Tick => {
+                self.draw_link(now);
+                Vec::new()
+            }
+        }
+    }
+
+    fn click(&mut self, click: Click, now: Instant) -> Vec<GuestAction> {
+        match click {
+            Click::Connect => {
+                self.reset(now);
+                self.wrote_hosts = false;
+                self.elevation_error = None;
+                self.check_network()
+            }
+            Click::CheckAgain => self.start_exchange(now),
+            Click::Fix(fix) => self.apply_fixes(vec![fix]),
+            Click::FixAll => self.apply_fixes(step::fixes(&self.steps)),
+            Click::RestoreHosts => {
+                self.elevation = Some(Elevation::Restore);
+                self.steps[HOSTS].status = Status::Running;
+                self.steps[HOSTS].summary = PROMPT.into();
+                vec![GuestAction::RestoreHosts]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_fixes(&mut self, fixes: Vec<Fix>) -> Vec<GuestAction> {
+        if fixes.is_empty() {
+            return Vec::new();
+        }
+        self.elevation = Some(Elevation::Fix);
+        self.fix_error = None;
+        vec![GuestAction::ApplyFixes(fixes)]
+    }
+
+    fn check_network(&mut self) -> Vec<GuestAction> {
+        let step = &mut self.steps[NETWORK];
+        step.status = Status::Running;
+        step.summary = "Checking this PC's network".into();
+        vec![GuestAction::CheckNetwork {
+            own: self.own,
+            peer: self.host,
+        }]
+    }
+
+    fn network(&mut self, network: io::Result<Network>, now: Instant) -> Vec<GuestAction> {
+        let step = &mut self.steps[NETWORK];
+        match network {
+            Err(err) => {
+                // The later steps show the route's effect even unchecked.
+                step.status = Status::Warning;
+                step.summary = format!("The network check failed to run: {err}");
+            }
+            Ok(network) => {
+                let mut findings = network.local.clone();
+                findings.extend(network.route.iter().cloned());
+                self.other_vpn = network.other_vpn;
+                // A wrong route would carry the hosts entry, reach and the
+                // exchange alike, so it stops them.
+                if let Some(problem) = network
+                    .route
+                    .iter()
+                    .find(|finding| finding.severity == Severity::Problem)
+                {
+                    step.status = Status::Failed;
+                    step.summary = checks::sentence(&problem.text);
+                    self.findings = findings;
+                    self.draw_link(now);
+                    return Vec::new();
+                }
+                step.status = Status::Ok;
+                step.summary = DONE[NETWORK].into();
+                step.details = vec![Detail::Text(match network.adapter {
+                    Some(adapter) => {
+                        format!("{} reaches {} through {adapter}", self.own, self.host)
+                    }
+                    None => format!("{} reaches {}", self.own, self.host),
+                })];
+                self.findings = findings;
+                self.draw_link(now);
+            }
+        }
+        let hosts = &mut self.steps[HOSTS];
+        hosts.status = Status::Running;
+        hosts.summary = "Reading the hosts file".into();
+        vec![GuestAction::ReadHosts]
+    }
+
+    fn hosts(&mut self, state: io::Result<State>, now: Instant) -> Vec<GuestAction> {
+        let text = match &state {
+            Ok(state) => state.to_string(),
+            Err(err) => format!("the hosts file cannot be read: {err}"),
+        };
+        let step = &mut self.steps[HOSTS];
+        step.details = vec![
+            Detail::Text(text.clone()),
+            Detail::Text(format!("backup: {}", hosts::backup_path().display())),
+        ];
+        if std::mem::take(&mut self.restoring) {
+            let error = self.elevation_error.take();
+            if matches!(state, Ok(State::EaServers)) {
+                self.reset(now);
+                return Vec::new();
+            }
+            // A failed restore leaves the game going to ds3-blaze, so what the
+            // run found still holds.
+            step.status = Status::Failed;
+            step.summary = checks::sentence(&error.unwrap_or(text));
+            return Vec::new();
+        }
+        match state {
+            Ok(State::Redirected(address)) if address == self.host => {
+                step.status = Status::Ok;
+                step.summary = DONE[HOSTS].into();
+                step.details
+                    .insert(0, Detail::Text(format!("hosts → {}", self.host)));
+                let reach = &mut self.steps[REACH];
+                reach.status = Status::Running;
+                reach.summary = "Asking the host's server".into();
+                vec![GuestAction::Reach {
+                    host: self.host,
+                    name: self.name.clone(),
+                }]
+            }
+            _ if !self.wrote_hosts => {
+                self.wrote_hosts = true;
+                self.elevation = Some(Elevation::Hosts);
+                step.status = Status::Running;
+                step.summary = PROMPT.into();
+                vec![GuestAction::WriteHosts(self.host)]
+            }
+            _ => {
+                step.status = Status::Failed;
+                step.summary = checks::sentence(&self.elevation_error.take().unwrap_or(text));
+                Vec::new()
+            }
+        }
+    }
+
+    fn elevated(&mut self, result: io::Result<i32>, now: Instant) -> Vec<GuestAction> {
+        self.elevation_error = result.err().map(|err| err.to_string());
+        match self.elevation.take() {
+            Some(Elevation::Hosts) => vec![GuestAction::ReadHosts],
+            Some(Elevation::Fix) => match self.elevation_error.take() {
+                Some(err) => {
+                    self.fix_error = Some(err);
+                    self.draw_link(now);
+                    Vec::new()
+                }
+                None => self.check_network(),
+            },
+            Some(Elevation::Restore) => {
+                // Restoring ends the connection: the later steps start over.
+                self.steps[REACH] = Step::new(WAITING[REACH]);
+                self.link = Link::default();
+                self.nickname = None;
+                self.draw_link(now);
+                self.draw_game();
+                self.restoring = true;
+                vec![GuestAction::ReadHosts]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn reach(&mut self, reports: &[Report], now: Instant) -> Vec<GuestAction> {
+        let findings: Vec<_> = reports.iter().map(checks::report_finding).collect();
+        let step = &mut self.steps[REACH];
+        step.details = checks::details(&findings);
+        if let Some(failed) = checks::first_failure(reports) {
+            step.status = Status::Failed;
+            step.summary = checks::sentence(&checks::report_finding(failed).text);
+            return Vec::new();
+        }
+        let nickname = reports
+            .iter()
+            .find(|report| report.stage == Stage::Nickname);
+        self.nickname = nickname.map(|report| report.result.clone());
+        step.status = match nickname {
+            Some(Report { result: Err(_), .. }) => Status::Warning,
+            _ => Status::Ok,
+        };
+        step.summary = match nickname.map(|report| &report.result) {
+            Some(Ok(text) | Err(text)) if !text.is_empty() => checks::sentence(text),
+            _ => DONE[REACH].into(),
+        };
+        self.start_exchange(now)
+    }
+
+    fn start_exchange(&mut self, now: Instant) -> Vec<GuestAction> {
+        self.link.start();
+        self.draw_link(now);
+        self.draw_game();
+        vec![GuestAction::Exchange { peer: self.host }]
+    }
+
+    fn draw_link(&mut self, now: Instant) {
+        let mut step = self.link.step(WAITING[LINK], DONE[LINK], now, SILENT_HINT);
+        checks::add_findings(&mut step, &self.findings);
+        if self.link.started() {
+            step.note = Some(LINK_NOTE.into());
+        }
+        if let Some(error) = &self.fix_error {
+            step.details
+                .push(Detail::Text(format!("the fix failed: {error}")));
+        }
+        self.steps[LINK] = step;
+    }
+
+    fn draw_game(&mut self) {
+        let step = &mut self.steps[GAME];
+        *step = Step::new(WAITING[GAME]);
+        if self.link.running() {
+            step.summary = "Wait until the direct link check ends".into();
+        } else if self.link.works() {
+            step.status = Status::Ok;
+            step.summary = DONE[GAME].into();
+            step.details = vec![
+                Detail::Text("a public game: the host creates it, then choose quick match".into()),
+                Detail::Text("a private game: accept the host's invite in the EA App".into()),
+            ];
+        } else if self.link.failed() {
+            step.status = Status::Warning;
+            step.summary = "The direct link failed, so co-op may not connect".into();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ds3_blaze_diag::netcheck::Finding;
+    use std::time::Duration;
+
+    const OWN: Ipv4Addr = Ipv4Addr::new(26, 0, 0, 2);
+    const HOST: Ipv4Addr = Ipv4Addr::new(26, 0, 0, 1);
+
+    fn flow() -> GuestFlow {
+        GuestFlow::new(OWN, "Carver".into(), HOST)
+    }
+
+    /// Returns a fresh flow whose link was drawn at `now`.
+    fn flow_at(now: Instant) -> GuestFlow {
+        let mut flow = flow();
+        flow.apply(GuestInput::Tick, now);
+        flow
+    }
+
+    #[test]
+    fn a_typed_host_address_is_parsed_or_refused() {
+        assert_eq!(parse_host(" 26.0.0.1 ", OWN), Ok(HOST));
+        assert_eq!(
+            parse_host("  ", OWN),
+            Err("Type the host's VPN address".into())
+        );
+        assert_eq!(
+            parse_host("26.0.0.2", OWN),
+            Err("Type the host's VPN address, not your own".into())
+        );
+        assert_eq!(
+            parse_host("0.0.0.0", OWN),
+            Err("Type the host's VPN address, not your own".into())
+        );
+        assert_eq!(
+            parse_host("26.0.0", OWN),
+            Err("26.0.0 is not an IPv4 address".into())
+        );
+    }
+
+    #[test]
+    fn the_title_names_the_host_once_one_is_known() {
+        assert_eq!(flow().title(), "Joining 26.0.0.1");
+        let idle = GuestFlow::new(OWN, "Carver".into(), Ipv4Addr::UNSPECIFIED);
+        assert_eq!(idle.title(), "Joining a friend");
+        assert_eq!(idle.stay(), None);
+    }
+
+    fn finding(severity: Severity, text: &str) -> Finding {
+        Finding {
+            severity,
+            text: text.into(),
+            fix: None,
+        }
+    }
+
+    fn clean_network() -> GuestInput {
+        GuestInput::Network(Ok(Network {
+            local: vec![finding(Severity::Ok, "VPN adapter is up")],
+            route: vec![finding(Severity::Ok, "the route takes the VPN")],
+            adapter: Some("Radmin VPN".into()),
+            other_vpn: Vec::new(),
+        }))
+    }
+
+    fn passing(stage: Stage) -> Report {
+        Report {
+            stage,
+            result: Ok(format!("{stage} answers")),
+        }
+    }
+
+    fn reports(nickname: Result<String, String>) -> Vec<Report> {
+        let mut reports: Vec<Report> = [
+            Stage::Resolve,
+            Stage::Redirector,
+            Stage::Blaze,
+            Stage::QosHttp,
+            Stage::QosUdp,
+        ]
+        .into_iter()
+        .map(passing)
+        .collect();
+        reports.push(Report {
+            stage: Stage::Nickname,
+            result: nickname,
+        });
+        reports
+    }
+
+    /// Returns a flow that went through Connect up to the reach stage.
+    fn reaching(now: Instant) -> GuestFlow {
+        let mut flow = flow();
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        flow.apply(clean_network(), now);
+        flow.apply(GuestInput::Hosts(Ok(State::Redirected(HOST))), now);
+        flow
+    }
+
+    #[test]
+    fn connect_checks_the_network_first() {
+        let mut flow = flow();
+        assert_eq!(
+            flow.apply(GuestInput::Click(Click::Connect), Instant::now()),
+            [GuestAction::CheckNetwork {
+                own: OWN,
+                peer: HOST
+            }]
+        );
+        assert_eq!(flow.steps()[NETWORK].status, Status::Running);
+    }
+
+    #[test]
+    fn a_route_problem_stops_the_steps_after_it() {
+        let mut flow = flow();
+        let now = Instant::now();
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        let actions = flow.apply(
+            GuestInput::Network(Ok(Network {
+                route: vec![finding(Severity::Problem, "the route takes Wi-Fi")],
+                ..Network::default()
+            })),
+            now,
+        );
+        assert!(actions.is_empty());
+        assert_eq!(flow.steps()[NETWORK].status, Status::Failed);
+        assert_eq!(flow.steps()[NETWORK].summary, "The route takes Wi-Fi");
+        assert_eq!(flow.steps()[HOSTS].status, Status::Waiting);
+    }
+
+    #[test]
+    fn the_hosts_entry_is_written_once_and_read_back() {
+        let mut flow = flow();
+        let now = Instant::now();
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        assert_eq!(flow.apply(clean_network(), now), [GuestAction::ReadHosts]);
+        assert_eq!(
+            flow.apply(GuestInput::Hosts(Ok(State::EaServers)), now),
+            [GuestAction::WriteHosts(HOST)]
+        );
+        assert_eq!(
+            flow.apply(GuestInput::Elevated(Ok(0)), now),
+            [GuestAction::ReadHosts]
+        );
+        assert!(
+            flow.apply(GuestInput::Hosts(Ok(State::EaServers)), now)
+                .is_empty()
+        );
+        assert_eq!(flow.steps()[HOSTS].status, Status::Failed);
+        assert_eq!(
+            flow.steps()[HOSTS].summary,
+            checks::sentence(&State::EaServers.to_string())
+        );
+    }
+
+    #[test]
+    fn a_declined_prompt_is_what_the_hosts_step_says() {
+        let mut flow = flow();
+        let now = Instant::now();
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        flow.apply(clean_network(), now);
+        flow.apply(GuestInput::Hosts(Ok(State::EaServers)), now);
+        let declined = io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the administrator prompt was declined",
+        );
+        flow.apply(GuestInput::Elevated(Err(declined)), now);
+        flow.apply(GuestInput::Hosts(Ok(State::EaServers)), now);
+        assert_eq!(
+            flow.steps()[HOSTS].summary,
+            "The administrator prompt was declined"
+        );
+    }
+
+    #[test]
+    fn the_hosts_entry_in_place_asks_for_reach_with_the_name() {
+        let mut flow = flow();
+        let now = Instant::now();
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        flow.apply(clean_network(), now);
+        assert_eq!(
+            flow.apply(GuestInput::Hosts(Ok(State::Redirected(HOST))), now),
+            [GuestAction::Reach {
+                host: HOST,
+                name: "Carver".into()
+            }]
+        );
+        assert_eq!(flow.steps()[HOSTS].summary, DONE[HOSTS]);
+    }
+
+    #[test]
+    fn waiting_steps_say_what_they_will_do() {
+        let summaries: Vec<String> = flow()
+            .steps()
+            .iter()
+            .map(|step| step.summary.clone())
+            .collect();
+        assert_eq!(summaries, WAITING);
+    }
+
+    #[test]
+    fn a_done_step_moves_its_technical_line_to_the_details() {
+        let now = Instant::now();
+        let flow = reaching(now);
+        let hosts = &flow.steps()[HOSTS];
+        assert_eq!(hosts.summary, "The game goes to the host's PC");
+        assert_eq!(hosts.details[0], Detail::Text(format!("hosts → {HOST}")));
+        assert_eq!(flow.steps()[NETWORK].summary, DONE[NETWORK]);
+    }
+
+    #[test]
+    fn buttons_that_ask_for_permission_say_so() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        assert!(
+            super::tests::flow()
+                .banner()
+                .action
+                .expect("Connect")
+                .elevates
+        );
+        assert!(flow.exit().elevates);
+        assert!(Button::fix(&Fix::GameRule).elevates);
+        flow.apply(GuestInput::Reach(reports(Ok(String::new()))), now);
+        flow.apply(GuestInput::Exchange(Ok(Outcome::default())), now);
+        let check_again = &flow.steps()[LINK].buttons[0];
+        assert_eq!(check_again.click, Click::CheckAgain);
+        assert!(!check_again.elevates);
+    }
+
+    #[test]
+    fn a_disabled_button_says_why() {
+        let mut flow = flow();
+        assert_eq!(flow.exit().disabled, Some(NOTHING_TO_UNDO));
+        flow.apply(GuestInput::Click(Click::Connect), Instant::now());
+        assert_eq!(
+            flow.exit().disabled,
+            Some("Wait until the current step ends")
+        );
+    }
+
+    #[test]
+    fn a_failed_nickname_warns_and_the_exchange_still_starts() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        let actions = flow.apply(
+            GuestInput::Reach(reports(Err("the host refused the name: x".into()))),
+            now,
+        );
+        assert_eq!(actions, [GuestAction::Exchange { peer: HOST }]);
+        assert_eq!(flow.steps()[REACH].status, Status::Warning);
+        assert!(flow.steps()[REACH].summary.contains("refused the name"));
+        assert_eq!(
+            flow.steps()[GAME].summary,
+            "Wait until the direct link check ends"
+        );
+    }
+
+    #[test]
+    fn network_issues_show_with_the_direct_link() {
+        let mut flow = flow();
+        let now = Instant::now();
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        flow.apply(
+            GuestInput::Network(Ok(Network {
+                local: vec![finding(Severity::Warning, "the network is Public")],
+                route: vec![finding(Severity::Ok, "the route takes the VPN")],
+                adapter: Some("Radmin VPN".into()),
+                other_vpn: Vec::new(),
+            })),
+            now,
+        );
+        assert_eq!(flow.steps()[NETWORK].status, Status::Ok);
+        let link = &flow.steps()[LINK];
+        assert_eq!(link.status, Status::Warning);
+        assert_eq!(link.summary, "1 thing to fix on this PC");
+        assert_eq!(link.details.len(), 2);
+    }
+
+    #[test]
+    fn a_clean_network_leaves_the_link_step_waiting_as_before() {
+        let mut flow = flow();
+        let now = Instant::now();
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        flow.apply(clean_network(), now);
+        assert_eq!(flow.steps()[LINK], flow_at(now).steps()[LINK]);
+    }
+
+    #[test]
+    fn disconnect_waits_for_the_running_step() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        assert_eq!(flow.exit().label, "Disconnect");
+        assert!(!flow.exit().enabled());
+        flow.apply(GuestInput::Reach(reports(Ok(String::new()))), now);
+        flow.apply(GuestInput::Exchange(Ok(Outcome::default())), now);
+        assert!(flow.exit().enabled());
+    }
+
+    /// Returns a flow connected through a network with `local` findings, the
+    /// exchange ended with `outcome`.
+    fn connected(local: Vec<Finding>, outcome: Outcome) -> GuestFlow {
+        let now = Instant::now();
+        let mut flow = flow();
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        flow.apply(
+            GuestInput::Network(Ok(Network {
+                local,
+                ..Network::default()
+            })),
+            now,
+        );
+        flow.apply(GuestInput::Hosts(Ok(State::Redirected(HOST))), now);
+        flow.apply(GuestInput::Reach(reports(Ok(String::new()))), now);
+        flow.apply(GuestInput::Exchange(Ok(outcome)), now);
+        flow
+    }
+
+    fn two_fixes() -> Vec<Finding> {
+        vec![
+            Finding {
+                fix: Some(Fix::GameRule),
+                ..finding(Severity::Warning, "no game rule")
+            },
+            Finding {
+                fix: Some(Fix::PrivateProfile(OWN)),
+                ..finding(Severity::Warning, "public network")
+            },
+        ]
+    }
+
+    fn working() -> Outcome {
+        Outcome {
+            sent: 5,
+            answered: 5,
+            received: 5,
+            strangers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn guest_idle_asks_for_the_address() {
+        let banner = flow().banner();
+        assert_eq!(banner.tone, Tone::Neutral);
+        assert_eq!(banner.text, "Join a friend");
+        assert_eq!(
+            banner.detail.as_deref(),
+            Some("Type the address the host's window shows")
+        );
+        let action = banner.action.expect("an action");
+        assert_eq!((action.label, action.click), ("Connect", Click::Connect));
+        assert!(action.elevates);
+        assert!(banner.input);
+    }
+
+    #[test]
+    fn guest_idle_again_after_disconnect() {
+        let now = Instant::now();
+        let mut flow = connected(Vec::new(), working());
+        assert!(flow.setup_done());
+        flow.apply(GuestInput::Click(Click::RestoreHosts), now);
+        flow.apply(GuestInput::Elevated(Ok(0)), now);
+        flow.apply(GuestInput::Hosts(Ok(State::EaServers)), now);
+        let banner = flow.banner();
+        assert_eq!(banner.text, "Join a friend");
+        assert!(banner.input && banner.action.is_some());
+        assert!(!flow.setup_done());
+    }
+
+    #[test]
+    fn guest_running_says_what_it_does() {
+        let mut flow = flow();
+        flow.apply(GuestInput::Click(Click::Connect), Instant::now());
+        let banner = flow.banner();
+        assert_eq!(banner.tone, Tone::Neutral);
+        assert_eq!(banner.text, format!("Connecting to {HOST}"));
+        assert_eq!(banner.detail.as_deref(), Some("Checking this PC's network"));
+        assert!(banner.spinner && banner.action.is_none());
+    }
+
+    #[test]
+    fn guest_link_check_says_not_to_start_the_game() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        flow.apply(GuestInput::Reach(reports(Ok(String::new()))), now);
+        let banner = flow.banner();
+        assert_eq!(banner.text, flow.steps()[LINK].summary);
+        assert_eq!(
+            banner.detail.as_deref(),
+            Some("Don't start the game until the check ends")
+        );
+        assert!(banner.spinner);
+    }
+
+    #[test]
+    fn guest_failure_names_it_and_the_action() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        let mut failing = reports(Ok(String::new()));
+        failing[2].result = Err("no answer".into());
+        flow.apply(GuestInput::Reach(failing), now);
+        let banner = flow.banner();
+        assert_eq!(banner.tone, Tone::Failure);
+        assert_eq!(banner.text, "Can't reach the host's server");
+        assert_eq!(banner.detail, Some(flow.steps()[REACH].summary.clone()));
+        let action = banner.action.expect("an action");
+        assert_eq!(
+            (action.label, action.click),
+            ("Check again", Click::Connect)
+        );
+    }
+
+    #[test]
+    fn guest_fixes_lead_to_fix_it() {
+        let banner = connected(two_fixes(), Outcome::default()).banner();
+        assert_eq!(banner.tone, Tone::Warning);
+        assert_eq!(banner.text, "Almost there");
+        assert_eq!(banner.detail.as_deref(), Some("2 things to fix on this PC"));
+        let action = banner.action.expect("an action");
+        assert_eq!((action.label, action.click), ("Fix it", Click::FixAll));
+        assert!(action.elevates);
+    }
+
+    #[test]
+    fn guest_failed_link_without_fix_says_to_check_again() {
+        let banner = connected(Vec::new(), Outcome::default()).banner();
+        assert_eq!(banner.tone, Tone::Warning);
+        assert_eq!(banner.text, "The direct link failed");
+        assert_eq!(banner.detail, Some(checks::sentence(SILENT_HINT)));
+        let action = banner.action.expect("an action");
+        assert_eq!(
+            (action.label, action.click),
+            ("Check again", Click::CheckAgain)
+        );
+    }
+
+    #[test]
+    fn guest_ready_says_to_start_the_game() {
+        let banner = connected(Vec::new(), working()).banner();
+        assert_eq!(banner.tone, Tone::Success);
+        assert_eq!(
+            banner.text,
+            "Ready: start Dead Space 3 and choose online co-op"
+        );
+        assert_eq!(banner.action, None);
+    }
+
+    #[test]
+    fn guest_failure_comes_before_fixes() {
+        let now = Instant::now();
+        let mut flow = flow();
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        flow.apply(
+            GuestInput::Network(Ok(Network {
+                local: two_fixes(),
+                ..Network::default()
+            })),
+            now,
+        );
+        flow.apply(GuestInput::Hosts(Ok(State::Redirected(HOST))), now);
+        let mut failing = reports(Ok(String::new()));
+        failing[2].result = Err("no answer".into());
+        flow.apply(GuestInput::Reach(failing), now);
+        assert_eq!(flow.banner().tone, Tone::Failure);
+    }
+
+    #[test]
+    fn the_name_the_host_sees_is_in_the_summary() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        flow.apply(
+            GuestInput::Reach(reports(Ok("the host sees you as Carver".into()))),
+            now,
+        );
+        assert_eq!(flow.steps()[REACH].status, Status::Ok);
+        assert_eq!(flow.steps()[REACH].summary, "The host sees you as Carver");
+    }
+
+    #[test]
+    fn a_failed_stage_stops_the_exchange() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        let mut failing = reports(Ok(String::new()));
+        failing[2].result = Err("no answer".into());
+        assert!(flow.apply(GuestInput::Reach(failing), now).is_empty());
+        assert_eq!(flow.steps()[REACH].status, Status::Failed);
+        assert_eq!(flow.steps()[LINK].status, Status::Waiting);
+    }
+
+    #[test]
+    fn the_link_counts_down_and_a_silent_end_says_to_close_the_game() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        flow.apply(GuestInput::Reach(reports(Ok(String::new()))), now);
+        flow.apply(
+            GuestInput::Progress(Progress::Pinging {
+                target: (HOST, 3659).into(),
+                until: tokio::time::Instant::from_std(now + Duration::from_secs(20)),
+            }),
+            now,
+        );
+        flow.apply(GuestInput::Tick, now + Duration::from_secs(5));
+        assert!(flow.steps()[LINK].summary.contains("15 s left"));
+        flow.apply(
+            GuestInput::Exchange(Ok(Outcome {
+                sent: 20,
+                ..Outcome::default()
+            })),
+            now,
+        );
+        let link = &flow.steps()[LINK];
+        assert_eq!(link.status, Status::Failed);
+        assert!(link.details.contains(&Detail::Text(SILENT_HINT.into())));
+        assert_eq!(flow.steps()[GAME].status, Status::Warning);
+        assert_eq!(
+            flow.apply(GuestInput::Click(Click::CheckAgain), now),
+            [GuestAction::Exchange { peer: HOST }]
+        );
+    }
+
+    #[test]
+    fn a_working_link_names_both_ways_into_the_game() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        flow.apply(GuestInput::Reach(reports(Ok(String::new()))), now);
+        flow.apply(
+            GuestInput::Exchange(Ok(Outcome {
+                sent: 5,
+                answered: 5,
+                received: 5,
+                strangers: Vec::new(),
+            })),
+            now,
+        );
+        let game = &flow.steps()[GAME];
+        assert_eq!(game.status, Status::Ok);
+        assert_eq!(game.details.len(), 2);
+    }
+
+    #[test]
+    fn restoring_the_ea_servers_ends_the_connection() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        flow.apply(GuestInput::Reach(reports(Ok(String::new()))), now);
+        assert_eq!(
+            flow.apply(GuestInput::Click(Click::RestoreHosts), now),
+            [GuestAction::RestoreHosts]
+        );
+        assert_eq!(
+            flow.apply(GuestInput::Elevated(Ok(0)), now),
+            [GuestAction::ReadHosts]
+        );
+        assert!(
+            flow.apply(GuestInput::Hosts(Ok(State::EaServers)), now)
+                .is_empty()
+        );
+        assert_eq!(flow.steps(), flow_at(now).steps(), "every step waits again");
+        assert!(!flow.busy());
+    }
+
+    #[test]
+    fn a_failed_restore_keeps_what_the_connection_found() {
+        let now = Instant::now();
+        let mut flow = reaching(now);
+        flow.apply(GuestInput::Click(Click::RestoreHosts), now);
+        flow.apply(GuestInput::Elevated(Ok(0)), now);
+        flow.apply(GuestInput::Hosts(Ok(State::Redirected(HOST))), now);
+        assert_eq!(flow.steps()[HOSTS].status, Status::Failed);
+        assert_eq!(flow.steps()[NETWORK].status, Status::Ok);
+    }
+
+    #[test]
+    fn fix_all_applies_every_fix_once_in_the_rows_order() {
+        let mut flow = flow();
+        let now = Instant::now();
+        assert!(flow.apply(GuestInput::Click(Click::FixAll), now).is_empty());
+        flow.apply(GuestInput::Click(Click::Connect), now);
+        let fixed = |severity, text: &str, fix| Finding {
+            fix: Some(fix),
+            ..finding(severity, text)
+        };
+        flow.apply(
+            GuestInput::Network(Ok(Network {
+                local: vec![
+                    fixed(Severity::Problem, "no game rule", Fix::GameRule),
+                    fixed(
+                        Severity::Warning,
+                        "public network",
+                        Fix::PrivateProfile(OWN),
+                    ),
+                    fixed(Severity::Problem, "no game rule again", Fix::GameRule),
+                ],
+                route: vec![finding(Severity::Ok, "the route takes the VPN")],
+                adapter: Some("Radmin VPN".into()),
+                other_vpn: Vec::new(),
+            })),
+            now,
+        );
+        assert_eq!(
+            flow.apply(GuestInput::Click(Click::FixAll), now),
+            [GuestAction::ApplyFixes(vec![
+                Fix::GameRule,
+                Fix::PrivateProfile(OWN)
+            ])]
+        );
+    }
+
+    #[test]
+    fn a_fix_runs_elevated_then_the_check_again() {
+        let mut flow = flow();
+        let now = Instant::now();
+        assert_eq!(
+            flow.apply(GuestInput::Click(Click::Fix(Fix::GameRule)), now),
+            [GuestAction::ApplyFixes(vec![Fix::GameRule])]
+        );
+        assert_eq!(
+            flow.apply(GuestInput::Elevated(Ok(0)), now),
+            [GuestAction::CheckNetwork {
+                own: OWN,
+                peer: HOST
+            }]
+        );
+    }
+}

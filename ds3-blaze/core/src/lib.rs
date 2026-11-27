@@ -15,3 +15,4 @@ pub mod qos;
 pub mod redirector;
 pub mod server;
 pub mod snapshot;
+pub mod vpn;

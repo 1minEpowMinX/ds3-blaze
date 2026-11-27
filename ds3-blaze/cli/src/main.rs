@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand};
 use ds3_blaze_core::event::{self, Event};
 use ds3_blaze_core::hosts::{self, Action, State};
 use ds3_blaze_core::log;
-use ds3_blaze_core::players::Roster;
+use ds3_blaze_core::players::{self, Roster};
 use ds3_blaze_core::server::{self, DEFAULT_BLAZE_PORT, Server};
 use ds3_blaze_diag::fix;
 use ds3_blaze_diag::netcheck::{self, Finding, Fix, Own, Setup, Severity};
@@ -65,7 +65,8 @@ enum Command {
     #[command(subcommand)]
     Fix(FixCommand),
     /// Checks every connection the game makes to the host's server before it
-    /// joins: the hosts entry, the redirector, the Blaze server and QoS.
+    /// joins: the hosts entry, the redirector, the Blaze server and QoS; with
+    /// --name, also sends this player's nickname to the host's server.
     Reach {
         /// The host's VPN address; on the host's own PC, its own VPN address.
         #[arg(long, value_name = "IP")]
@@ -73,6 +74,9 @@ enum Command {
         /// The address the hosts entry should give; the default is --host.
         #[arg(long, value_name = "IP")]
         expect: Option<Ipv4Addr>,
+        /// This player's nickname, sent to the host's server as the last stage.
+        #[arg(long, value_name = "NICK", value_parser = nickname)]
+        name: Option<String>,
     },
     /// Relays the game to EA's Blaze servers and logs every message.
     #[cfg(feature = "research")]
@@ -98,6 +102,19 @@ enum FixCommand {
         /// This PC's VPN address.
         #[arg(long, value_name = "IP")]
         address: Ipv4Addr,
+    },
+    /// Applies the fixes the flags name in one run, going on after a fix
+    /// that fails.
+    Several {
+        /// Adds the rule `game-rule` adds.
+        #[arg(long)]
+        game_rule: bool,
+        /// Adds the rule `server-rule` adds for the program at PATH.
+        #[arg(long, value_name = "PATH")]
+        server_rule: Option<PathBuf>,
+        /// Sets the network of the adapter holding IP to Private.
+        #[arg(long, value_name = "IP")]
+        network_profile: Option<Ipv4Addr>,
     },
 }
 
@@ -130,7 +147,7 @@ struct ServeArgs {
     #[arg(long, value_name = "PORT", default_value_t = DEFAULT_BLAZE_PORT)]
     blaze_port: u16,
     /// Display name of the player on this machine.
-    #[arg(long, value_name = "NAME", default_value = DEFAULT_NAME, value_parser = non_empty)]
+    #[arg(long, value_name = "NAME", default_value = DEFAULT_NAME, value_parser = nickname)]
     name: String,
     /// Display name of the player connecting from IP; others get Player-<last
     /// octet of their IP>.
@@ -166,20 +183,19 @@ struct EaArgs {
     ea_redirector: std::net::SocketAddr,
 }
 
-/// Returns `name` when it holds more than white space.
-fn non_empty(name: &str) -> Result<String, String> {
-    if name.trim().is_empty() {
-        Err("the name is empty".into())
-    } else {
-        Ok(name.to_string())
-    }
+/// Returns `name` when [`players::check_nickname`] accepts it, or the reason
+/// it is refused.
+fn nickname(name: &str) -> Result<String, String> {
+    players::check_nickname(name)
+        .map(|()| name.to_string())
+        .map_err(|reason| format!("the name is refused: {reason}"))
 }
 
 /// Returns the address and the name of an `IP=NAME` entry.
 fn player(entry: &str) -> Result<(Ipv4Addr, String), String> {
     let (ip, name) = entry.split_once('=').ok_or("expected IP=NAME")?;
     let ip = ip.parse().map_err(|err| format!("{ip}: {err}"))?;
-    Ok((ip, non_empty(name)?))
+    Ok((ip, nickname(name)?))
 }
 
 #[cfg(feature = "research")]
@@ -222,6 +238,7 @@ async fn serve(args: ServeArgs) -> io::Result<()> {
             own_name: args.name,
             allowed: args.players.iter().map(|(ip, _)| *ip).collect(),
             names: args.players.into_iter().collect(),
+            offered: Default::default(),
             only_allowed: args.only_listed,
         },
     };
@@ -230,26 +247,10 @@ async fn serve(args: ServeArgs) -> io::Result<()> {
 
 /// Returns what `state` means for the game, or its problem as an error.
 fn describe(state: State) -> io::Result<String> {
-    Ok(match state {
-        State::EaServers => "the game reaches the EA servers".into(),
-        State::Redirected(address) => {
-            format!("the game reaches the ds3-blaze server at {address}")
-        }
-        State::Overridden { entry, ours } => {
-            let instead = match ours {
-                Some(ours) => format!("the ds3-blaze server at {ours}"),
-                None => "the EA servers".into(),
-            };
-            format!(
-                "line {} of {}, \"{}\", sends the game to {} instead of {instead}; remove that line",
-                entry.line,
-                hosts::path().display(),
-                entry.text,
-                entry.address
-            )
-        }
-        State::Broken(problem) => return Err(io::Error::other(problem)),
-    })
+    match state {
+        State::Broken(problem) => Err(io::Error::other(problem)),
+        state => Ok(state.to_string()),
+    }
 }
 
 /// Runs a `hosts` subcommand.
@@ -409,6 +410,9 @@ fn needing_administrator(err: io::Error) -> io::Error {
 }
 
 /// Carries out the fix `command` names.
+///
+/// `Several` applies each fix in turn, prints one line per fix and fails
+/// when any fix failed or when no flag names a fix.
 fn run_fix(command: FixCommand) -> io::Result<()> {
     let fix = match command {
         FixCommand::GameRule => Fix::GameRule,
@@ -416,21 +420,76 @@ fn run_fix(command: FixCommand) -> io::Result<()> {
             Fix::ServerRule(program.map_or_else(std::env::current_exe, Ok)?)
         }
         FixCommand::NetworkProfile { address } => Fix::PrivateProfile(address),
+        FixCommand::Several {
+            game_rule,
+            server_rule,
+            network_profile,
+        } => return run_several(&several(game_rule, server_rule, network_profile)),
     };
     fix::apply(&fix).map_err(needing_administrator)?;
     println!("done; net-check shows the new state");
     Ok(())
 }
 
+/// Returns the fixes the flags of `fix several` name, in the order of the
+/// flags in the help.
+fn several(
+    game_rule: bool,
+    server_rule: Option<PathBuf>,
+    network_profile: Option<Ipv4Addr>,
+) -> Vec<Fix> {
+    let mut fixes = Vec::new();
+    if game_rule {
+        fixes.push(Fix::GameRule);
+    }
+    fixes.extend(server_rule.map(Fix::ServerRule));
+    fixes.extend(network_profile.map(Fix::PrivateProfile));
+    fixes
+}
+
+/// Applies each of `fixes`, printing its command and outcome, and fails
+/// naming how many failed when any did or when `fixes` is empty.
+fn run_several(fixes: &[Fix]) -> io::Result<()> {
+    if fixes.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "name at least one fix: --game-rule, --server-rule or --network-profile",
+        ));
+    }
+    let mut failed = 0;
+    for fix in fixes {
+        match fix::apply(fix).map_err(needing_administrator) {
+            Ok(()) => println!("{}: done", fix_command(fix)),
+            Err(err) => {
+                failed += 1;
+                println!("{}: {err}", fix_command(fix));
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(io::Error::other(format!(
+            "{failed} of {} fixes failed",
+            fixes.len()
+        )));
+    }
+    println!("net-check shows the new state");
+    Ok(())
+}
+
 /// Checks the server at `host` with the hosts entry expected to give
-/// `expected`, printing one line per stage; fails when a stage fails.
-async fn reach_command(host: Ipv4Addr, expected: Ipv4Addr) -> io::Result<()> {
+/// `expected`, sending `name` last when it is given, and prints one line per
+/// stage; fails when a stage other than the nickname fails.
+async fn reach_command(host: Ipv4Addr, expected: Ipv4Addr, name: Option<String>) -> io::Result<()> {
     println!("checking the way to the server at {host}:");
-    let reports = reach::run(expected, host, server::Ports::default()).await;
+    let reports = reach::run(expected, host, server::Ports::default(), name.as_deref()).await;
     let mut failed = 0;
     for report in &reports {
         match &report.result {
             Ok(text) => println!("  [ok] {}: {text}", report.stage),
+            // The game still works under the name the host's server gives.
+            Err(text) if report.stage == reach::Stage::Nickname => {
+                println!("  [warning] {}: {text}", report.stage)
+            }
             Err(text) => {
                 failed += 1;
                 println!("  [problem] {}: {text}", report.stage);
@@ -558,7 +617,9 @@ async fn main() -> ExitCode {
         Command::Fix(command) => run_fix(command),
         Command::NetCheck { peer, address } => net_check_command(peer, address),
         Command::P2pCheck(args) => p2p_check(args).await,
-        Command::Reach { host, expect } => reach_command(host, expect.unwrap_or(host)).await,
+        Command::Reach { host, expect, name } => {
+            reach_command(host, expect.unwrap_or(host), name).await
+        }
         #[cfg(feature = "research")]
         Command::Proxy(args) => printing_log(run_proxy(args.ea_redirector)).await,
         #[cfg(feature = "research")]
@@ -591,15 +652,16 @@ mod tests {
         );
         assert!(player("26.0.0.2").is_err());
         assert!(player("26.0.0.2= ").is_err());
+        assert!(player("26.0.0.2=Isaac Clarke").is_err());
         assert!(player("26.0.2=Carver").is_err());
     }
 
     #[test]
     fn fix_commands_run_as_printed() {
-        let exe = std::path::Path::new(r"C:\My Games\ds3-blaze.exe");
+        let exe = std::path::Path::new(r"C:\My Games\ds3-blaze-cli.exe");
         assert_eq!(
-            fix_command_from(&Fix::GameRule, r".\ds3-blaze.exe", Some(exe)),
-            r".\ds3-blaze.exe fix game-rule"
+            fix_command_from(&Fix::GameRule, r".\ds3-blaze-cli.exe", Some(exe)),
+            r".\ds3-blaze-cli.exe fix game-rule"
         );
         assert_eq!(
             fix_command_from(
@@ -607,7 +669,7 @@ mod tests {
                 &exe.display().to_string(),
                 Some(exe)
             ),
-            r#"& "C:\My Games\ds3-blaze.exe" fix server-rule"#
+            r#"& "C:\My Games\ds3-blaze-cli.exe" fix server-rule"#
         );
         assert_eq!(
             fix_command_from(
@@ -625,6 +687,48 @@ mod tests {
             ),
             "ds3-blaze fix network-profile --address 26.0.0.1"
         );
+    }
+
+    #[test]
+    fn several_fixes_parse_in_the_order_of_the_flags() {
+        let cli = Cli::try_parse_from([
+            "ds3-blaze-cli",
+            "fix",
+            "several",
+            "--network-profile",
+            "26.0.0.2",
+            "--game-rule",
+        ])
+        .expect("the flags parse");
+        let Command::Fix(FixCommand::Several {
+            game_rule,
+            server_rule,
+            network_profile,
+        }) = cli.command
+        else {
+            panic!("not fix several");
+        };
+        assert_eq!(
+            several(game_rule, server_rule, network_profile),
+            [
+                Fix::GameRule,
+                Fix::PrivateProfile(Ipv4Addr::new(26, 0, 0, 2))
+            ]
+        );
+    }
+
+    #[test]
+    fn several_without_a_flag_names_no_fix() {
+        assert!(Cli::try_parse_from(["ds3-blaze-cli", "fix", "several"]).is_ok());
+        assert!(several(false, None, None).is_empty());
+        assert!(run_several(&[]).is_err());
+    }
+
+    #[test]
+    fn default_name_is_a_nickname() {
+        // clap parses a string default with the value parser, so a refused
+        // default would fail every `serve` started without --name.
+        assert_eq!(nickname(DEFAULT_NAME), Ok(DEFAULT_NAME.to_string()));
     }
 
     #[test]

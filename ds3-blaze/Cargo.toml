@@ -1,12 +1,13 @@
 [workspace]
-members = ["core", "diag", "cli"]
+members = ["core", "diag", "cli", "gui"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 publish = false
+repository = "https://github.com/1minEpowMinX/ds3-blaze"
 
 [workspace.dependencies]
 # SSLv3 with the ProtoSSL bypass certificate (feature "blaze-cert", on by default)
@@ -18,10 +19,31 @@ tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
+windows-sys = "0.61"
+# OpenGL draws the window: wgpu loads the driver of every graphics card in the
+# machine with its shader compiler, and DX12 alone weighs even more.
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "glow",
+    "links",
+    # The arrows and the UAC shield come from the fonts of the system.
+    "system_fonts",
+] }
+# The version eframe's window handles come from.
+raw-window-handle = "0.6"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+# Embeds the icon and version resource in the Windows executables (build.rs).
+winresource = "0.1"
 
 [profile.release]
 # Symbols are stripped from the exe; the MSVC linker still writes a .pdb beside
 # it, which tools/package.ps1 leaves out of the archive.
 strip = true
-lto = "thin"
+lto = "fat"
 codegen-units = 1
+# The window and a server for a few players spend their time waiting, so size
+# matters more than speed.
+opt-level = "s"

@@ -14,6 +14,12 @@ tokio.workspace = true
 tokio-util.workspace = true
 futures.workspace = true
 chrono.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
 
 [dev-dependencies]
 # A paused clock for the session timeout tests.

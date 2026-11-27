@@ -33,7 +33,7 @@ Events go out on a `tokio::sync::broadcast` channel, one per process like the lo
 
 ### Player book
 
-`PlayerBook` holds the names by address, the allowed addresses and the "only allowed players" switch behind a `RwLock`. It replaces `Config::player_name`, `player_names` and `only_listed`, so renaming a player or allowing a refused address takes effect for the next connection without restarting the server. `Config::admits` and `Config::name_for` move onto it with their current rules.
+`PlayerBook` holds the names by address, the allowed addresses and the "only allowed players" switch behind a `RwLock`. It replaces `Config::player_name`, `player_names` and `only_listed`, so renaming a player or allowing a refused address takes effect for the next connection without restarting the server. `Config::admits` and `Config::name_for` move onto it with their current rules. From stage 6 it also holds the names guests send themselves, below the names the host sets (see "Guest nickname").
 
 ### hosts
 
@@ -87,6 +87,8 @@ The exchange binds `GAME_PORT`, which the game holds while it runs. A failed bin
 
 The redirector has to hand out the address being checked: a server advertising another address sends the guest's game elsewhere, so that fails the redirector stage, and `preAuth` is then not tried. The other stages connect to the checked address directly and run whatever the name resolves to. Each stage has a timeout of its own (`reach::STAGE_TIMEOUT`), so a packet dropped over the VPN costs seconds rather than the TCP connect timeout.
 
+Given the player's name, `reach` also sends it to the host's server as a last stage, described under "Guest nickname".
+
 The expected hosts address and the server address are separate parameters (`reach --host IP [--expect IP]`, where `--expect` defaults to `--host`). The guest expects the host's address and checks the host's server; the host expects 127.0.0.1 and checks its own server through its VPN address, which shows that the listeners answer on the VPN interface.
 
 ### Protocol test
@@ -97,59 +99,105 @@ The full client scenario of today's `selftest` (login, room creation, the second
 
 ### Start screen
 
-The start screen asks for the player's name and VPN address (from `vpn`, VPN adapters first) and offers two modes: host a game, or join a friend. Every other VPN adapter that is up is marked, with a note that another VPN can take over the other player's traffic. It shows the state of the hosts file. When ds3-blaze entries are present while no server or connection is active, as after a crash, it offers to restore the EA servers.
+The start screen asks for the player's name and VPN address in one card and offers the two modes as large cards below it: host a game, or join a friend.
+
+The player's own VPN address is chosen here once, for both modes. The first address `vpn::choices` returns is taken and shown as one line with its adapter's name and "Change", which opens the list of VPN adapters, and of the adapter holding the chosen address, with the others behind "Show all adapters". Without an adapter to choose, the line asks the player to connect the VPN and offers "Read adapters again". When another VPN adapter is up beside the chosen one, one line under the address says that another VPN can take over the other player's traffic.
+
+A name the rule refuses says why under the name field, and the cards stay disabled. Each card is one button, for the keyboard and screen readers as well as the mouse. When the hosts file holds ds3-blaze entries while no server or connection is active, as after a crash, a notice offers "Restore EA servers"; otherwise the screen says nothing about the hosts file.
+
+A line at the foot of the window gives the version and the short hash of the commit the build comes from, with a link to the repository the workspace manifest names. The hash is dimmer than the version, shows the full hash and the commit date on hover and copies the full hash on a click; `gui/build.rs` sets all three and leaves them empty outside a git checkout, where the line gives the version alone.
+
+### Mode screen
+
+A mode's screen holds, from top to bottom:
+
+- **Header:** Back as an arrow, disabled with its reason while a step runs or the server runs, and "Hosting" or "Joining" with the host's address ("Joining a friend" before one is typed). The window title is "ds3-blaze"; the player's name shows on the start screen and in the host's session only.
+- **Banner:** one sentence on where things stand, an optional second line, one main button and a tone (neutral, success, warning, failure). A spinner takes the button's place while a step runs.
+- **Setup:** the steps as quiet rows. Once the mode is set up (`setup_done`: every guest step done; the host's server running with the steps before the link done and the link done or waiting for a guest) they collapse into one line, "Setup done", which the player may open; when a step runs, needs a fix or fails, the list opens by itself. What the player opened belongs to that mode's screen: starting, connecting and stopping close every row and the line again, and the other mode starts with all of them closed. Once Stop hosting or Disconnect has restored the EA servers, every step waits again as before the first start; a restore that fails keeps what the run found, since the game still goes to ds3-blaze.
+- **Session**, host only: the room, the players and the server log.
+- **Footer:** the button that ends the mode's changes, "Stop hosting" or "Disconnect".
+
+### Look
+
+Every screen is one column of cards, centred in the window and no wider than `theme::COLUMN`, on a background darker than the cards. A title in small capitals opens each part: Setup, This game, Players, Server log on a mode's screen; You and Play on the start screen. The setup rows, the players and the room's three values each sit in one card with thin lines between their parts, and an open row's details, the log and the fields sit in wells darker than the card.
+
+Colour carries one meaning each. The accent fills the banner's button, the one thing to press next, marks the shield and a running step, and colours the bar of a neutral banner; nothing else uses it. Green, orange and red mark how a step, a finding or a player stands, and tint the banner with its bar on the left. A done row is plain text, a waiting one weak, so the eye goes to the banner first and then to whatever needs attention. The palette, the type sizes and the spacing are defined once, in `gui/src/ui/theme.rs`.
+
+### Banner
+
+The banner is a pure function of a mode's state (`GuestFlow::banner`, `HostFlow::banner`): it reads the steps, whether the server runs and whether a step is busy, and stores nothing, so it never disagrees with the rows. The first rule that matches wins, which puts a cause before its effect: a firewall fix waits until the host's server answers.
+
+| Guest | Host |
+|---|---|
+| the hosts entry not in place and nothing failed, as before Connect and after Disconnect: "Join a friend", the host's address field, "Connect" | the direct link checked: the countdown, and not to start the game until the check ends |
+| the direct link checked: the countdown, and not to start the game until the check ends | a step running: "Starting the server", with what the step does below |
+| a step running: "Connecting to" the host's address, with what the step does below | a step failed: what failed, the step's sentence, "Start server"; a server that runs but fails its own check says friends can't reach it |
+| a step failed: what failed, the step's sentence, "Check again" (Connect), and the address field to change a wrong address | server stopped: "Start the server so friends can join", "Start server" |
+| findings with fixes: "Almost there", how many things to fix, "Fix it" | an address turned away: "Someone wants to join" with the address and the nickname it sent, "Let in" |
+| the direct link failed with nothing to fix: what that means, "Check again" | findings with fixes: as the guest |
+| everything done: "Ready: start Dead Space 3 and choose online co-op" | serving, nobody connected: "Waiting for friends", the address, "Copy address" |
+| | players connected: "Playing with" their names, "Copy address" |
+
+"Fix it" applies every fix the findings offer in one elevated run of `fix several`, so the player sees one administrator prompt. The banner's button is the only place "Connect", "Start server" and "Fix it" appear; the rows do not repeat it. "Copy address" says "Copied" for a moment after a click, at its own width.
 
 ### Step rows
 
-Both modes are built from one widget: a row with a step marker, a title, a one-line summary, a status pill and a chevron, laid out left to right like a table row. A click expands the row to its details, where a warning lists its findings with their fix buttons. Rows stay as the player left them: the GUI does not expand or collapse them by itself.
+A row is a sign (waiting, running, done, needs a fix, failed), one sentence in the player's words and, when it has details, a chevron. A waiting row says what the step will do; a done row says what is now true. Clicking a row opens its panel: the technical lines (the hosts entry, the listeners, the `reach` stages, the exchange counters), the findings with one button per fix, and the step's buttons such as "Check again". Rows stay as the player left them, apart from the setup list opening by itself. The direct link's row takes the findings of the network check before its own check only when one of them needs a fix, so a row that has not run shows no results.
 
-A mode is a list of steps. Each step owns its state (waiting, running, ok, warning, failed), its summary, its pill and its expanded view; the rendering only reads them. The step logic therefore has unit tests without a window.
+A mode is a list of steps. Each step owns its state, its sentence and its panel; the rendering only reads them, so the step logic has unit tests without a window.
 
-The summary carries the information a player watches during play, so a collapsed row is enough: "Carver connected · 1 waiting", "Public · 2/2 · Chapter 4".
+The crate keeps the two apart by folder. `gui/src/flow` holds the modes' state machines and everything the window shows of them (the banner, the steps, the session, the start screen's form, the closing dialog's state) and never names egui; a test fails if one of its modules does. `gui/src/ui` draws what a flow holds and returns the clicks, changing nothing but the fields it binds. `app.rs` carries the clicks to the flows and the flows' actions to the background work, and owns the I/O: the hosts file, the adapters, the server, the elevated runs.
 
 ### Host steps
 
-| Step | Summary when done | Expanded |
-|---|---|---|
-| Your VPN address | address and adapter; "Start server" | the local part's findings with fixes |
-| Point game at this PC | hosts → 127.0.0.1 | the entry, the backup, "Restore EA servers" |
-| Server | listening on the VPN address | the three listeners; `reach` against the VPN address |
-| Players | who is connected, how many are waiting | names editable in place, "Allow" for refused addresses, "Only players I allow" |
-| Direct link to the guest | both directions and latency | the route part for the guest's address, the exchange, findings with fixes, "Check again" |
-| Room | visibility, players, chapter | chapter and restore point, how the guest joined; before a room exists, the step tells the host to start the game and create one |
-| Log | the latest line | recent lines, "Open logs folder" |
+| Step | Waiting | Done | Panel |
+|---|---|---|---|
+| Network | Check this PC's network | This PC's network is ready | the adapter and the local findings |
+| Game | Point the game at this PC | The game goes to this PC | the hosts entry and the backup |
+| Server | Start the server | The server is running | the three listeners; `reach` against the VPN address |
+| Direct link, named after the guest once known | Check the direct link to the guest | The direct link works | the local findings and the route part for the guest's address, with fixes; the exchange; "Check again" |
 
-"Stop and restore hosts" stops the server and removes the hosts entry.
+### Host session
+
+| Part | Shows |
+|---|---|
+| Room | the room's state and how many of its places are taken; before a room exists, "Start Dead Space 3 and create a game"; while the check with the guest runs, to wait before starting the game |
+| Progress | the chapter and restore point read from `GAME_CHECKPOINT` |
+| Matchmaking | whether the room is open to matchmaking |
+| Players | the host's own row; each connected guest with its name and address, Rename opening a field in the name's place, an emptied name returning to the guest's own, and beside a name the host set the guest's own nickname with "Use this name"; each refused address as someone turned away, with the nickname it sent and "Let in"; the switch "Only let in players I approve" |
+| Log | the last `SESSION_LOG_LINES` lines, "Open logs folder" |
+
+A refused address has no name to change; Rename comes once it is let in.
 
 ### Guest steps
 
-| Step | Summary when done | Expanded |
-|---|---|---|
-| Host's VPN address | the address and the adapter the route takes; "Connect" | the local part and the route part for the host's address, with fixes |
-| Point game at host | hosts → the host's address | the entry, the backup, "Restore EA servers" |
-| Reach host's server | all services answer | each `reach` stage with its result |
-| Direct link to host | both directions and latency | the exchange, findings with fixes, "Check again" |
-| Start Dead Space 3 | online co-op | quick match for a public game, the EA App invite for a private one |
-
-"Disconnect and restore hosts" removes the hosts entry.
+| Step | Waiting | Done | Panel |
+|---|---|---|---|
+| Network | Check this PC's network | This PC's network is ready | the adapter, the route to the host and the local findings |
+| Game | Point the game at the host's PC | The game goes to the host's PC | the hosts entry and the backup |
+| Host's server | Ask the host's server | The host's server answers, with the name the host sees | each `reach` stage with its result |
+| Direct link | Check the direct link to the host | The direct link works | the local part and the route part for the host's address, with fixes; the exchange; "Check again" |
+| Start Dead Space 3 | Start Dead Space 3 and choose online co-op | | quick match for a public game, the EA App invite for a private one |
 
 ### Order of the steps
 
-The guest's "Connect" runs the route part before the hosts file changes. A route problem stops the steps after it, since the hosts entry, `reach` and the exchange would all go through the same wrong route; the row says what to change and "Connect" runs it again. The host learns the guest's address only from the guest's first connection, so the host's route part runs alongside the exchange that connection starts, and the exchange still begins when the guest's does.
+The guest's "Connect" runs the route part before the hosts file changes. A route problem stops the steps after it, since the hosts entry, `reach` and the exchange would all go through the same wrong route; the banner says what to change and "Connect" runs it again. The host learns the guest's address only from the guest's first connection, so the host's route part runs alongside the exchange that connection starts, and the exchange still begins when the guest's does.
 
-The direct link step comes before the game step in both modes because the check needs `GAME_PORT`. While it runs, the row says not to start the game until the countdown ends. The host's room step says the same until the check with the guest has finished.
+The direct link step comes before the game step in both modes because the check needs `GAME_PORT`. While it runs, the guest's banner says not to start the game until the countdown ends, and the host's room tile says the same until the check with the guest has finished.
 
-When the host's game is already running as the guest connects, the host's run cannot bind the port and the guest's pings go unanswered. The guest's row then says that a host whose game is running closes it, and both press "Check again".
+When the host's game is already running as the guest connects, the host's run cannot bind the port and the guest's pings go unanswered. The guest's banner then says that a host whose game is running closes it, and both press "Check again".
 
-The GUI does not block the game from starting during a check. A passing run ends `LINGER` after both directions work, so the window is a few seconds, and the ways to block a launch (an `Image File Execution Options` debugger entry, or ending the game's process) need administrator rights, look like malware to antivirus software, and leave the game unable to start if the window crashes. How the game behaves when it starts while a check holds `GAME_PORT` has not been observed; a check in game decides whether the row's warning needs to be stronger.
+The GUI does not block the game from starting during a check. A passing run ends `LINGER` after both directions work, so the window is a few seconds, and the ways to block a launch (an `Image File Execution Options` debugger entry, or ending the game's process) need administrator rights, look like malware to antivirus software, and leave the game unable to start if the window crashes. How the game behaves when it starts while a check holds `GAME_PORT` has not been observed; a check in game decides whether the banner's warning needs to be stronger.
 
 ### Elevation
 
 Writing the hosts file and applying fixes need administrator rights; the GUI itself runs without them, so the server never runs elevated. The GUI starts `ds3-blaze-cli.exe` next to itself through `ShellExecuteExW` with the verb `runas` (one UAC prompt per action), waits for it, and then checks the outcome by reading the state again: the hosts state needs no rights, and the network findings come from the local check.
 
+A button that starts such a run carries a shield before its label and the hover text "Windows asks for permission"; the flow that builds the button marks it (`Button::elevates`), and `row::action`, the one function that draws a `Button`, draws the shield. The main button sets it on a dark disc, since the glyph's own blue is lost on the accent. A disabled button gives the reason on hover (`Button::disabled`).
+
 ### Settings
 
-`ds3-blaze.toml` next to the executable keeps the player's name, the last mode, the last host address and the names of known players. The archive is meant to be unpacked into a folder of its own, where the logs already go.
+`ds3-blaze.toml` next to the executable keeps the player's name, the last mode, the last host address and the names the host gave known players. The archive is meant to be unpacked into a folder of its own, where the logs already go.
 
 ### Closing
 
@@ -161,12 +209,13 @@ Closing the window while the hosts file points at ds3-blaze asks whether to rest
 
 | Command | Purpose |
 |---|---|
-| `serve` | the server, with today's options |
+| `serve` | the server, with today's options; `--name` and `--player` names follow `players::check_nickname` |
 | `hosts enable --address IP`, `hosts disable`, `hosts status` | the hosts entry; `enable` and `disable` need an elevated console |
 | `fix game-rule`, `fix server-rule [--program PATH]`, `fix network-profile --address IP` | the network fixes the GUI offers; `--program` defaults to the running executable; all need an elevated console |
+| `fix several [--game-rule] [--server-rule PATH] [--network-profile IP]` | the fixes named, one after another in one run; a failed fix does not stop the others, each prints its outcome, and the run fails when any fix failed |
 | `net-check --peer IP [--address IP]` | the network findings, each wrong setting with the `fix` command that changes it; `--address` is the player's own VPN address, and without it the route is checked against any adapter `is_vpn` recognises |
 | `p2p-check --peer IP [--address IP] [--port PORT] [--seconds N]` | the P2P exchange, after the same findings |
-| `reach --host IP [--expect IP]` | the guest's server check |
+| `reach --host IP [--expect IP] [--name NICK]` | the guest's server check; `--name` sends the guest's nickname as its last stage |
 | `proxy`, `ea-check` | research only, built with the feature `research` |
 
 The GUI's settings file does not affect the command line, which stays predictable for tests.
@@ -178,7 +227,7 @@ The GUI's settings file does not affect the command line, which stays predictabl
 
 ## Documentation roles
 
-The GUI owns the procedure: its step rows say what to do and how to fix what is wrong. The documents stop retelling it.
+The GUI owns the procedure: its banner and step rows say what to do and how to fix what is wrong. The documents stop retelling it.
 
 | Document | Holds | Leaves out |
 |---|---|---|
@@ -186,13 +235,15 @@ The GUI owns the procedure: its step rows say what to do and how to fix what is 
 | README | the same short start, the command line with a pointer to `ds3-blaze-cli --help`, the login token warning, development | the option list, which `clap` generates |
 | [network-checks.md](../guides/network-checks.md) | manual checks with the command line for when the GUI is not enough | |
 
-The README and the Nexus page still share the few sentences of the short start, because the Nexus page has to stand on its own. The note in [docs/README.md](../README.md) about keeping the two in step stays, now covering only those sentences. The limitation "names in game come from `--name` and `--player`" changes to the start screen and the host's players table.
+The README and the Nexus page still share the few sentences of the short start, because the Nexus page has to stand on its own. The note in [docs/README.md](../README.md) about keeping the two in step stays, now covering only those sentences. The limitation "names in game come from `--name` and `--player`" changes to the start screen and the players in the host's session.
 
 ## Tests
 
 - `hosts::rewrite`: with and without a byte order mark, ANSI text, CRLF and LF, an empty file, a file without a final line break, legacy-marker lines, a section without an end line, repeated `enable`.
 - `hosts::state`: an entry for a redirected name outside the section, before the section and after it, and a commented one.
-- `PlayerBook`: admission and naming rules as `Config::admits` and `Config::name_for` have them now, and changes while sessions are open.
+- `PlayerBook`: admission and naming rules as `Config::admits` and `Config::name_for` have them now, and changes while sessions are open; a guest's sent name below a name the host set, below `own_name`, back after the host's name is cleared, and kept for a refused address.
+- `players::check_nickname`: both ends of `NICKNAME_LENGTH`, `-` and `_`, and refusals of Cyrillic letters, a space and a line break.
+- The nickname request: an accepted name, a refused one leaving the book unchanged, a name the host set answered in place of the sent one; `nickname_reply` for each answer; `reach` with a name against a server started in the test.
 - The route part on parsed records: no route; the route through an adapter other than the chosen one, including one that `is_vpn` recognises; a gateway in between; a source address other than the chosen one; another VPN adapter up beside a passing route (no route finding) and beside a failing one (the likely cause).
 - The local part on parsed records: no adapter holds the chosen address; a Public network with its fix; a block rule; a missing rule with inbound blocked and allowed; no server rule on a guest's PC; a port rule without a program counting as the game's.
 - `fix::script`: the port from `GAME_PORT`, a program path with a single quote, the adapter holding the given address, the administrator check.
@@ -201,6 +252,10 @@ The README and the Nexus page still share the few sentences of the short start, 
 - `reach`: the resolved addresses against the expected one; a server started in the test, checked at its own address and while advertising another one.
 - The protocol test described above.
 - The steps of each mode as state machines, without a window.
+- The banner of each mode: one case per row of its table, the mode driven into that state by inputs, and the order of the rules where two match.
+- `fix several`: the arguments parsed into the fixes they name, and a run with no fix named refused.
+
+A debug build fills the screens with made-up states when the variable `preview::VARIABLE` names one of the states `preview.rs` defines, so each banner and the session can be looked at without a VPN, an administrator prompt or a second PC.
 
 ## Stages
 
@@ -211,9 +266,21 @@ Each stage is a branch of its own, merged into `main` when CI passes. A stage th
 3. Events, snapshot and `PlayerBook`; the core stops printing and the CLI prints the events.
 4. `clap`, the `hosts` module and `hosts` command, `scripts/hosts.ps1` removed.
 5. Diagnostics: findings and fixes, the route part tied to the chosen address, the `fix` command, `p2p` events, `reach`, and the hosts state reporting entries for the redirector outside the section.
-6. The GUI, the guest's nickname sent to the host, and the renaming of the executables.
+6. The GUI, the guest's nickname sent to the host, and the renaming of the executables. The mode screens are then rebuilt around the banner, the quiet setup rows and the host's session, with `fix several` behind "Fix it".
 7. README, Nexus page, network-checks and the docs index rewritten for the GUI.
 
 ## Guest nickname
 
-The guest tells the host its own nickname, so the host no longer has to type it. The way the guest sends it (for example a request to the host's QoS HTTP server) and how the host confirms it are still to be thought through; they are settled at the start of stage 6, which builds them with the GUI. The same channel would let the guest's window show the name the host sees, which `reach` cannot learn without a full login.
+The guest's window sends the player's name to the host's server, so the host no longer types it, and the guest's window shows the name the host's game will use.
+
+**Rule.** `players::check_nickname` holds the rule, modelled on EA persona names: a length within `players::NICKNAME_LENGTH`, and ASCII letters, digits, `-` and `_` only. The start screen's name field, `serve --name` and `--player`, and the server's handling of a sent name all apply it, so a name needs no escaping in a URL, a log line or the settings file.
+
+**Request.** `GET /ds3-blaze/name?n=<name>` on the QoS HTTP listener. The server takes the guest's address from the connection, so a guest can name only itself. It answers 200 with the name its game will show for that address (`name_for` after the change), or 400 with the reason when the rule refuses the name. A server without nicknames answers the path with its usual 404.
+
+**Precedence.** `Roster` gains `offered`, the names guests sent, by address. `name_for` takes, in order: the host's entry in `names` (from `--player`, the settings file or the players in the host's session); `own_name` for this machine and the advertised address; the guest's entry in `offered`; `Player-` and the last octet. A name the host set therefore wins without a confirmation step, and clearing it in the session (`set_name(ip, None)`) brings the guest's name back. A sent name is kept for a refused address too, so the host sees whom "Let in" admits. `offered` lives as long as the server: the settings file keeps only the host's names, and a guest sends its name at each connection, so a nickname changed since the last session is not overruled by an old copy. Each sent name raises `event::changed` and logs `<address> calls itself <name>`.
+
+**Timing.** A player already logged in keeps the name it logged in with, so the name has to arrive before the guest's game logs in. In the guest's steps it does, since `reach` comes before the game step.
+
+**Guest side.** `reach` gains an optional last stage, `Stage::Nickname`, run when it is given a name: `reach::run(expected, address, ports, name)`, and `reach --name NICK` on the command line. `nickname_reply(status, body)`, a pure function, reads the answer: the name that was sent passes as "the host sees you as …"; another name passes as "the host calls you …", since the game works under it and the host can change it; 404 fails as a host whose ds3-blaze takes no nicknames; 400 fails with the server's reason. The GUI shows a failed nickname stage as a warning, not a failure: the game still works under the name the host's server gives, and the direct link step does not wait for it.
+
+**Saves.** Campaign progress lives in local saves only, and neither player's save holds a player name, the id `Player::from_name` derives or an EA account id: checked on 2026-11-26 on the host's and the guest's saves from the co-op of 2026-11-25. A nickname may therefore change between sessions without a warning. The walk-through between two PCs in stage 6 repeats the check after a restore point reached together.
